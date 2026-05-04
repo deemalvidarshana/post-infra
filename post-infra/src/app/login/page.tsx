@@ -1,7 +1,44 @@
-import React from 'react';
+"use client";
+import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('http://localhost:5001/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        localStorage.setItem('token', data.token);
+        router.push('/'); // Redirect to dashboard
+      } else {
+        setError(data.message || 'Login failed');
+      }
+    } catch (err) {
+      setError('Could not connect to the server');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="bg-[#0a0a0a] text-on-surface min-h-screen flex flex-col relative overflow-x-hidden antialiased">
       {/* Ambient Background Glow */}
@@ -21,6 +58,12 @@ export default function LoginPage() {
               <p className="text-sm text-neutral-400">Sign in to precise infrastructure.</p>
             </div>
 
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs py-2 px-3 rounded text-center">
+                {error}
+              </div>
+            )}
+
             <button className="w-full h-12 flex items-center justify-center gap-3 rounded border border-white/10 bg-white/5 hover:bg-white/10 transition-colors duration-200 group">
               <span className="material-symbols-outlined text-[20px] text-on-surface group-hover:text-white transition-colors">login</span>
               <span className="text-sm font-medium text-on-surface group-hover:text-white transition-colors">Continue with Google</span>
@@ -32,7 +75,7 @@ export default function LoginPage() {
               <div className="h-px bg-white/10 flex-grow"></div>
             </div>
 
-            <form className="space-y-4">
+            <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-1">
                 <label className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block" htmlFor="email">Email Address</label>
                 <input 
@@ -40,6 +83,9 @@ export default function LoginPage() {
                   id="email" 
                   placeholder="name@company.com" 
                   type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
                 />
               </div>
 
@@ -53,11 +99,18 @@ export default function LoginPage() {
                   id="password" 
                   placeholder="••••••••" 
                   type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
                 />
               </div>
 
-              <button className="w-full h-12 mt-6 rounded bg-white text-black text-sm font-bold hover:bg-neutral-200 hover:shadow-[0_0_20px_rgba(192,193,255,0.3)] transition-all duration-300" type="submit">
-                Sign In
+              <button 
+                className="w-full h-12 mt-6 rounded bg-white text-black text-sm font-bold hover:bg-neutral-200 hover:shadow-[0_0_20px_rgba(192,193,255,0.3)] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed" 
+                type="submit"
+                disabled={loading}
+              >
+                {loading ? 'Signing In...' : 'Sign In'}
               </button>
             </form>
 

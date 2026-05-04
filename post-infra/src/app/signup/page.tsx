@@ -1,7 +1,45 @@
-import React from 'react';
+"use client";
+import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 export default function SignUpPage() {
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('http://localhost:5001/api/auth/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fullName, email, password }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        localStorage.setItem('token', data.token);
+        router.push('/'); // Redirect to dashboard
+      } else {
+        setError(data.message || 'Registration failed');
+      }
+    } catch (err) {
+      setError('Could not connect to the server');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="bg-[#0a0a0a] text-on-background min-h-screen flex flex-col font-sans antialiased selection:bg-primary-container selection:text-on-primary-container">
       {/* TopNavBar */}
@@ -39,6 +77,12 @@ export default function SignUpPage() {
             <p className="text-sm text-neutral-400">Join post-infra to build precise infrastructure.</p>
           </div>
 
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs py-2 px-3 rounded text-center mb-6">
+              {error}
+            </div>
+          )}
+
           <button className="w-full flex items-center justify-center gap-4 py-3 px-6 rounded border border-white/10 bg-transparent text-white text-sm hover:bg-white/5 transition-all duration-300 mb-8 group">
             <svg fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"></path>
@@ -55,7 +99,7 @@ export default function SignUpPage() {
             <div className="flex-grow h-px bg-white/10"></div>
           </div>
 
-          <form className="space-y-4">
+          <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-1">
               <label className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block" htmlFor="name">Full Name</label>
               <input 
@@ -63,6 +107,8 @@ export default function SignUpPage() {
                 id="name" 
                 placeholder="Jane Doe" 
                 type="text"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
               />
             </div>
 
@@ -73,6 +119,9 @@ export default function SignUpPage() {
                 id="email" 
                 placeholder="name@company.com" 
                 type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
               />
             </div>
 
@@ -83,12 +132,19 @@ export default function SignUpPage() {
                 id="password" 
                 placeholder="••••••••" 
                 type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
               />
             </div>
 
-            <button className="w-full h-12 mt-6 rounded bg-white text-black text-sm font-bold hover:bg-neutral-200 hover:shadow-[0_0_20px_rgba(192,193,255,0.3)] transition-all duration-300 flex justify-center items-center gap-2 group" type="submit">
-              Sign Up
-              <span className="material-symbols-outlined text-black group-hover:translate-x-1 transition-transform duration-300" style={{ fontSize: '18px' }}>arrow_forward</span>
+            <button 
+              className="w-full h-12 mt-6 rounded bg-white text-black text-sm font-bold hover:bg-neutral-200 hover:shadow-[0_0_20px_rgba(192,193,255,0.3)] transition-all duration-300 flex justify-center items-center gap-2 group disabled:opacity-50 disabled:cursor-not-allowed" 
+              type="submit"
+              disabled={loading}
+            >
+              {loading ? 'Creating Account...' : 'Sign Up'}
+              {!loading && <span className="material-symbols-outlined text-black group-hover:translate-x-1 transition-transform duration-300" style={{ fontSize: '18px' }}>arrow_forward</span>}
             </button>
           </form>
 
