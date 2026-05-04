@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+import Cookies from 'js-cookie';
+
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -16,7 +18,7 @@ export default function LoginPage() {
     setError('');
 
     try {
-      const response = await fetch('http://localhost:5001/api/auth/login', {
+      const response = await fetch('/api/identity/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -27,7 +29,8 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        localStorage.setItem('token', data.token);
+        // Store token in cookie (expires in 7 days)
+        Cookies.set('auth_token', data.token, { expires: 7, secure: true, sameSite: 'strict' });
         router.push('/'); // Redirect to dashboard
       } else {
         setError(data.message || 'Login failed');

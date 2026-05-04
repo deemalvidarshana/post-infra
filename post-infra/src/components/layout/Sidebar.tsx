@@ -12,8 +12,17 @@ const navItems = [
   { name: 'Settings', href: '/settings', icon: 'settings' },
 ];
 
+import Cookies from 'js-cookie';
+import { useRouter } from 'next/navigation';
+
 export const Sidebar = () => {
   const pathname = usePathname();
+  const router = useRouter();
+
+  const handleLogout = () => {
+    Cookies.remove('auth_token');
+    router.push('/login');
+  };
 
   return (
     <nav className="hidden md:flex h-screen w-64 glass-nav shadow-[20px_0_40px_rgba(0,0,0,0.3)] fixed left-0 top-0 bottom-0 flex flex-col pt-6 z-50 font-sans tracking-tight antialiased text-[13px]">
@@ -51,18 +60,27 @@ export const Sidebar = () => {
       </div>
 
       <div className="mt-auto p-4 mb-4">
-        <div className="flex items-center gap-3 px-4 py-2 border border-white/5 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer">
-          <div className="w-6 h-6 rounded-full bg-surface-container-highest border border-white/10 overflow-hidden">
-            <img 
-              alt="User Avatar" 
-              className="w-full h-full object-cover" 
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuDnn9I2zHGXXlMdio7188CkVMEAawGL-fBBCGasCVwvaxyoW8fOOrSQQuQ4zAou7ICTjHZFEtyiaBPbxNkpZk0EXQMTcH0-BEAaJs0RtOZy2569akntFt-Oomc_3ZbhQAZKYts4Z24MTOvIAmy1lcyOsSkLGoGGPA75Y71vxzJKu2fAbnOCBe-zjZGvey-cvSxXyVlSlk17JQXtcglAqniuZUhpTauzC70y29LeVlRa3mqGdkIxZrVx6YBT55dxBgsZ3NQx10FH5neg" 
-            />
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3 px-4 py-2 border border-white/5 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer">
+            <div className="w-6 h-6 rounded-full bg-surface-container-highest border border-white/10 overflow-hidden">
+              <img 
+                alt="User Avatar" 
+                className="w-full h-full object-cover" 
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuDnn9I2zHGXXlMdio7188CkVMEAawGL-fBBCGasCVwvaxyoW8fOOrSQQuQ4zAou7ICTjHZFEtyiaBPbxNkpZk0EXQMTcH0-BEAaJs0RtOZy2569akntFt-Oomc_3ZbhQAZKYts4Z24MTOvIAmy1lcyOsSkLGoGGPA75Y71vxzJKu2fAbnOCBe-zjZGvey-cvSxXyVlSlk17JQXtcglAqniuZUhpTauzC70y29LeVlRa3mqGdkIxZrVx6YBT55dxBgsZ3NQx10FH5neg" 
+              />
+            </div>
+            <div className="flex flex-col">
+              <span className="text-white text-xs font-medium">J. Doe</span>
+              <span className="text-neutral-500 text-[10px]">Admin</span>
+            </div>
           </div>
-          <div className="flex flex-col">
-            <span className="text-white text-xs font-medium">J. Doe</span>
-            <span className="text-neutral-500 text-[10px]">Admin</span>
-          </div>
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-3 px-4 py-2 text-red-400 hover:text-red-300 hover:bg-red-500/5 rounded-lg transition-colors text-xs font-medium"
+          >
+            <span className="material-symbols-outlined text-sm">logout</span>
+            Logout
+          </button>
         </div>
       </div>
     </nav>

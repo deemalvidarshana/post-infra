@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+import Cookies from 'js-cookie';
+
 export default function SignUpPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -17,7 +19,7 @@ export default function SignUpPage() {
     setError('');
 
     try {
-      const response = await fetch('http://localhost:5001/api/auth/register', {
+      const response = await fetch('/api/identity/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -28,7 +30,8 @@ export default function SignUpPage() {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        localStorage.setItem('token', data.token);
+        // Store token in cookie (expires in 7 days)
+        Cookies.set('auth_token', data.token, { expires: 7, secure: true, sameSite: 'strict' });
         router.push('/'); // Redirect to dashboard
       } else {
         setError(data.message || 'Registration failed');
