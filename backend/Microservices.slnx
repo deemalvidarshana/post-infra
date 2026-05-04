@@ -4,7 +4,7 @@
   </Folder>
   <Folder Name="/Services/">
     <Project Path="Services/Identity.API/Identity.API.csproj" />
-    <Project Path="Services/Instagram.API/Instagram.API.csproj" />
+    <Project Path="Services/Smapi.API/Smapi.API.csproj" />
     <Project Path="Services/Reporting.API/Reporting.API.csproj" />
   </Folder>
 </Solution>

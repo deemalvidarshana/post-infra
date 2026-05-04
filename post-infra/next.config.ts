@@ -7,6 +7,10 @@ const nextConfig: NextConfig = {
         source: '/api/identity/:path*',
         destination: 'http://localhost:5001/api/:path*',
       },
+      {
+        source: '/api/smapi/:path*',
+        destination: 'http://localhost:5002/api/:path*',
+      },
     ];
   },
 };

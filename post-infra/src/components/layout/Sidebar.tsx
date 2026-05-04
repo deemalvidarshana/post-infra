@@ -12,12 +12,20 @@ const navItems = [
   { name: 'Settings', href: '/settings', icon: 'settings' },
 ];
 
+const smAccountItems = [
+  { name: 'Instagram', href: '/accounts/instagram' },
+  { name: 'Facebook', href: '/accounts/facebook' },
+  { name: 'TikTok', href: '/accounts/tiktok' },
+];
+
 import Cookies from 'js-cookie';
 import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 
 export const Sidebar = () => {
   const pathname = usePathname();
   const router = useRouter();
+  const [isSMExpanded, setIsSMExpanded] = useState(false);
 
   const handleLogout = () => {
     Cookies.remove('auth_token');
@@ -57,6 +65,44 @@ export const Sidebar = () => {
             </Link>
           );
         })}
+
+        {/* Collapsible SM Accounts Section */}
+        <div className="mt-4">
+          <button 
+            onClick={() => setIsSMExpanded(!isSMExpanded)}
+            className="w-full flex items-center justify-between px-4 py-2 text-neutral-500 hover:text-neutral-300 hover:bg-white/5 rounded-lg transition-all duration-200 group"
+          >
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined">person_add</span>
+              <span className="text-[10px] uppercase tracking-[0.2em] font-bold">SM Accounts</span>
+            </div>
+            <span className={`material-symbols-outlined text-sm transition-transform duration-300 ${isSMExpanded ? 'rotate-180' : ''}`}>
+              expand_more
+            </span>
+          </button>
+
+          {isSMExpanded && (
+            <div className="flex flex-col space-y-1 mt-1 ml-9">
+              {smAccountItems.map((item) => {
+                const isActive = pathname === item.href;
+                
+                return (
+                  <Link 
+                    key={item.name} 
+                    href={item.href} 
+                    className={`flex items-center px-4 py-1.5 rounded-lg transition-all duration-200 text-xs ${
+                      isActive 
+                      ? "text-white font-medium bg-white/5" 
+                      : "text-neutral-500 hover:text-neutral-300 hover:bg-white/5"
+                    }`}
+                  >
+                    {item.name}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-auto p-4 mb-4">

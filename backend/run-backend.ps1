@@ -3,7 +3,7 @@ Write-Host "Starting all backend services..." -ForegroundColor Cyan
 
 $services = @(
     "Services/Identity.API",
-    "Services/Instagram.API",
+    "Services/Smapi.API",
     "Services/Reporting.API",
     "ApiGateways/Gateway.API"
 )
