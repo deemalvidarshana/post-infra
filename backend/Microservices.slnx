@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/ApiGateways/">
+    <Project Path="ApiGateways/Gateway.API/Gateway.API.csproj" />
+  </Folder>
+  <Folder Name="/Services/">
+    <Project Path="Services/Identity.API/Identity.API.csproj" />
+    <Project Path="Services/Instagram.API/Instagram.API.csproj" />
+    <Project Path="Services/Reporting.API/Reporting.API.csproj" />
+  </Folder>
+</Solution>
