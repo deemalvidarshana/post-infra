@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: smapi-db
+    environment:
+      POSTGRES_DB: smapi_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: always
+
+  identity-api:
+    build:
+      context: ./backend/Services/Identity.API
+    container_name: identity-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__DefaultConnection=Host=db;Database=smapi_db;Username=postgres;Password=1234
+    depends_on:
+      - db
+    ports:
+      - "5001:8080"
+    restart: always
+
+  smapi-api:
+    build:
+      context: ./backend/Services/Smapi.API
+    container_name: smapi-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__DefaultConnection=Host=db;Database=smapi_db;Username=postgres;Password=1234
+      - LocalStorage__RootPath=/app/downloads
+    volumes:
+      - ./downloads:/app/downloads
+    depends_on:
+      - db
+    ports:
+      - "5002:8080"
+    restart: always
+
+  reporting-api:
+    build:
+      context: ./backend/Services/Reporting.API
+    container_name: reporting-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__DefaultConnection=Host=db;Database=smapi_db;Username=postgres;Password=1234
+    depends_on:
+      - db
+    ports:
+      - "5003:8080"
+    restart: always
+
+  frontend:
+    build:
+      context: ./post-infra
+    container_name: sm-frontend
+    environment:
+      - NODE_ENV=production
+      - SMAPI_BASE_URL=http://smapi-api:8080/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - smapi-api
+    restart: always
+
+volumes:
+  postgres_data:
