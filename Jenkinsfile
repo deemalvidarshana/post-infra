@@ -25,7 +25,7 @@ pipeline {
         stage('Build Docker Images') {
             steps {
                 echo 'Building Docker images using Docker Compose...'
-                sh 'docker compose build'
+                sh 'docker-compose build'
             }
         }
 
@@ -34,7 +34,7 @@ pipeline {
                 echo 'Deploying application using Docker Compose...'
                 // -d means detached mode (run in background)
                 // --remove-orphans cleans up old containers
-                sh 'docker compose up -d --remove-orphans'
+                sh 'docker-compose up -d --remove-orphans'
             }
         }
 
