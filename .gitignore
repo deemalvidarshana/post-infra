@@ -46,3 +46,13 @@ next-env.d.ts
 *.userosscache
 *.sln.docstates
 .vs/
+
+# App Specific
+**/downloads/
+**/logs/
+
+# Temporary / Scratch
+*.png
+*.html
+test.py
+debug_error.png

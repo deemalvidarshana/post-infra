@@ -36,7 +36,7 @@ export default function SignUpPage() {
       } else {
         setError(data.message || 'Registration failed');
       }
-    } catch (err) {
+    } catch {
       setError('Could not connect to the server');
     } finally {
       setLoading(false);

@@ -1,4 +1,5 @@
 using Smapi.API.Data;
+using Smapi.API.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -6,6 +7,26 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.AddHttpClient<IApifyFacebookPostsClient, ApifyFacebookPostsClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
+builder.Services.AddHttpClient<IFacebookReelsPublisher, FacebookReelsPublisher>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+    SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
+});
+builder.Services.AddSingleton<IFacebookReelUploadQueue, FacebookReelUploadQueue>();
+builder.Services.AddSingleton<IFacebookPostS3UploadQueue, FacebookPostS3UploadQueue>();
+builder.Services.AddSingleton<IFacebookPostS3DownloadCancellation, FacebookPostS3DownloadCancellation>();
+builder.Services.AddScoped<IYtDlpVideoDownloader, YtDlpVideoDownloader>();
+builder.Services.AddScoped<ILocalVideoStorageService, LocalVideoStorageService>();
+builder.Services.AddHostedService<FacebookReelUploadWorker>();
+builder.Services.AddHostedService<FacebookPostS3UploadWorker>();
 
 // Database
 builder.Services.AddDbContext<SmapiDbContext>(options =>

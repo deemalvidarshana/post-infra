@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Smapi.API.Data;
@@ -11,9 +12,11 @@ using Smapi.API.Data;
 namespace Smapi.API.Migrations
 {
     [DbContext(typeof(SmapiDbContext))]
-    partial class SmapiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260509133859_ScopeFacebookPagesByUser")]
+    partial class ScopeFacebookPagesByUser
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,38 +24,6 @@ namespace Smapi.API.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Smapi.API.Models.ApifySetting", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ApiToken")
-                        .IsRequired()
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId")
-                        .IsUnique();
-
-                    b.ToTable("ApifySettings");
-                });
 
             modelBuilder.Entity("Smapi.API.Models.FacebookPage", b =>
                 {
@@ -106,10 +77,6 @@ namespace Smapi.API.Migrations
                     b.Property<string>("Caption")
                         .HasColumnType("text");
 
-                    b.Property<string>("PageId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
                     b.Property<string>("PermalinkUrl")
                         .IsRequired()
                         .HasMaxLength(2048)
@@ -121,29 +88,6 @@ namespace Smapi.API.Migrations
                     b.Property<string>("PostId")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
-
-                    b.Property<string>("S3Bucket")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("S3Key")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<string>("S3Region")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("S3UploadError")
-                        .HasColumnType("text");
-
-                    b.Property<string>("S3UploadStatus")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<DateTime?>("S3UploadedAt")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime>("ScrapedAt")
                         .HasColumnType("timestamp with time zone");
@@ -165,9 +109,7 @@ namespace Smapi.API.Migrations
 
                     b.HasIndex("PostId");
 
-                    b.HasIndex("UserId", "PageId");
-
-                    b.HasIndex("UserId", "PageId", "PermalinkUrl")
+                    b.HasIndex("UserId", "PermalinkUrl")
                         .IsUnique();
 
                     b.ToTable("FacebookPostUrls");
@@ -240,9 +182,6 @@ namespace Smapi.API.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
-                    b.Property<DateTime?>("ScheduledFor")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -273,61 +212,6 @@ namespace Smapi.API.Migrations
                     b.HasIndex("UserId", "CreatedAt");
 
                     b.ToTable("FacebookReelUploadJobs");
-                });
-
-            modelBuilder.Entity("Smapi.API.Models.S3StorageSetting", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AccessKeyId")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("Bucket")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("EndpointUrl")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<string>("Region")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("SecretAccessKey")
-                        .IsRequired()
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<string>("SessionToken")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId")
-                        .IsUnique();
-
-                    b.ToTable("S3StorageSettings");
                 });
 
             modelBuilder.Entity("Smapi.API.Models.FacebookReelUploadJob", b =>

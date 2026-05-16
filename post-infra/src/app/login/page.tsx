@@ -35,7 +35,7 @@ export default function LoginPage() {
       } else {
         setError(data.message || 'Login failed');
       }
-    } catch (err) {
+    } catch {
       setError('Could not connect to the server');
     } finally {
       setLoading(false);
@@ -119,7 +119,7 @@ export default function LoginPage() {
 
             <div className="text-center pt-4">
               <p className="text-sm text-neutral-400">
-                Don't have an account? <Link className="text-primary hover:text-white transition-colors font-bold" href="/signup">Sign up</Link>
+                Don&apos;t have an account? <Link className="text-primary hover:text-white transition-colors font-bold" href="/signup">Sign up</Link>
               </p>
             </div>
           </div>
