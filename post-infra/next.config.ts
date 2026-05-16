@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: '/api/identity/:path*',
-        destination: 'http://localhost:5001/api/:path*',
+        destination: 'http://identity-api:8080/api/:path*',
       },
     ];
   },
