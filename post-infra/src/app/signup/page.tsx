@@ -31,7 +31,7 @@ export default function SignUpPage() {
 
       if (response.ok && data.success) {
         // Store token in cookie (expires in 7 days)
-        Cookies.set('auth_token', data.token, { expires: 7, sameSite: 'strict' });
+        Cookies.set('auth_token', data.token, { expires: 7 });
         router.push('/'); // Redirect to dashboard
       } else {
         setError(data.message || 'Registration failed');
