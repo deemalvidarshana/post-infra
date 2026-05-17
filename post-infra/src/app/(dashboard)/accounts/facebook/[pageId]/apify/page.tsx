@@ -1,7 +1,7 @@
 "use client";
 
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface FacebookPageApi {
@@ -56,8 +56,10 @@ type ScrapePlatform = 'facebook' | 'tiktok';
 export default function FacebookApifyPage() {
   const params = useParams<{ pageId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const pageId = useMemo(() => safeDecode(params.pageId), [params.pageId]);
-  const [userId, setUserId] = useState(() => getStoredUserId());
+  const routeUserId = searchParams.get('userId') || '';
+  const [userId, setUserId] = useState('');
   const [page, setPage] = useState<FacebookPageApi | null>(null);
   const [scrapedPosts, setScrapedPosts] = useState<ScrapedPost[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -76,6 +78,8 @@ export default function FacebookApifyPage() {
     resultsLimit: ''
   });
   const hasLoadedStoredUser = useRef(false);
+  const appliedRouteUserId = useRef('');
+  const appliedStoredUserId = useRef(false);
 
   const visibleLogPosts = useMemo(() => scrapedPosts, [scrapedPosts]);
   const uploadableLogPosts = useMemo(
@@ -136,7 +140,7 @@ export default function FacebookApifyPage() {
       const postsResponse = await fetch(`/api/smapi/Pages/facebook/posts/${encodeURIComponent(effectiveUserId)}?pageId=${encodeURIComponent(effectivePageId)}`);
       const postsData = await postsResponse.json();
       if (Array.isArray(postsData)) {
-        setScrapedPosts(postsData as ScrapedPost[]);
+        setScrapedPosts((postsData as ScrapedPost[]).filter((post) => post.pageId === effectivePageId));
       }
     } catch (err) {
       console.error('Failed to fetch Facebook Apify page data', err);
@@ -147,13 +151,30 @@ export default function FacebookApifyPage() {
   }, [pageId, router, userId]);
 
   useEffect(() => {
+    if (routeUserId && appliedRouteUserId.current !== routeUserId) {
+      appliedRouteUserId.current = routeUserId;
+      window.setTimeout(() => setUserId(routeUserId), 0);
+      window.localStorage.setItem('smapi_user_id', routeUserId);
+      hasLoadedStoredUser.current = false;
+      return;
+    }
+
+    if (!routeUserId && !appliedStoredUserId.current) {
+      appliedStoredUserId.current = true;
+      const storedUserId = getStoredUserId();
+      if (storedUserId && storedUserId !== userId) {
+        window.setTimeout(() => setUserId(storedUserId), 0);
+        return;
+      }
+    }
+
     if (hasLoadedStoredUser.current || !userId.trim()) {
       return;
     }
 
     hasLoadedStoredUser.current = true;
     void fetchPageData(userId);
-  }, [fetchPageData, userId]);
+  }, [fetchPageData, routeUserId, userId]);
 
   useEffect(() => {
     if (!userId.trim() || !visibleLogPosts.some((post) => post.s3UploadStatus === 'Queued' || post.s3UploadStatus === 'Downloading' || post.s3UploadStatus === 'Uploading')) {
@@ -239,7 +260,7 @@ export default function FacebookApifyPage() {
 
       setScrapeMessage(`Scraped ${data.scrapedCount} ${scrapeForm.platform === 'tiktok' ? 'TikTok posts' : 'reels'}. Saved ${data.savedCount}, updated ${data.updatedCount}, skipped ${data.skippedCount}.`);
       setScrapedPosts((previousPosts) => {
-        const merged = [...data.posts, ...previousPosts];
+        const merged = [...data.posts.filter((post) => post.pageId === pageId), ...previousPosts];
         const seen = new Set<string>();
         return merged.filter((post) => {
           const postKey = `${platformValue(post)}:${post.permalinkUrl}`;
@@ -409,9 +430,10 @@ export default function FacebookApifyPage() {
 
     setScrapeMessage('');
     try {
-      const response = await fetch(`/api/smapi/Pages/facebook/posts/${post.id}`, {
-        method: 'DELETE'
-      });
+      const response = await fetch(
+        `/api/smapi/Pages/facebook/posts/${post.id}?userId=${encodeURIComponent(userId.trim())}&pageId=${encodeURIComponent(pageId)}`,
+        { method: 'DELETE' }
+      );
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
@@ -489,7 +511,7 @@ export default function FacebookApifyPage() {
 
     try {
       const response = await fetch(
-        `/api/smapi/FacebookS3Uploads/facebook/reels/${post.id}/url?userId=${encodeURIComponent(userId.trim())}&expiresMinutes=60`
+        `/api/smapi/FacebookS3Uploads/facebook/reels/${post.id}/url?userId=${encodeURIComponent(userId.trim())}&pageId=${encodeURIComponent(pageId)}&expiresMinutes=60`
       );
       const responseText = await response.text();
       let data: { success?: boolean; url?: string; message?: string } | null = null;

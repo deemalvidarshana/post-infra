@@ -49,14 +49,11 @@ namespace Smapi.API.Controllers
             }
 
             var postIds = request.PostIds.Distinct().ToList();
-            var query = _context.FacebookPostUrls.Where(post => post.UserId == request.UserId);
+            var query = _context.FacebookPostUrls
+                .Where(post => post.UserId == request.UserId && post.PageId == request.PageId);
             if (postIds.Count > 0)
             {
                 query = query.Where(post => postIds.Contains(post.Id));
-            }
-            else
-            {
-                query = query.Where(post => post.PageId == request.PageId);
             }
 
             var posts = await query
@@ -124,14 +121,11 @@ namespace Smapi.API.Controllers
             }
 
             var postIds = request.PostIds.Distinct().ToList();
-            var query = _context.FacebookPostUrls.Where(post => post.UserId == request.UserId);
+            var query = _context.FacebookPostUrls
+                .Where(post => post.UserId == request.UserId && post.PageId == request.PageId);
             if (postIds.Count > 0)
             {
                 query = query.Where(post => postIds.Contains(post.Id));
-            }
-            else
-            {
-                query = query.Where(post => post.PageId == request.PageId);
             }
 
             var posts = await query
@@ -167,6 +161,7 @@ namespace Smapi.API.Controllers
         public async Task<IActionResult> GetUploadedVideoUrl(
             int postId,
             [FromQuery] string userId,
+            [FromQuery] string? pageId,
             [FromQuery] int expiresMinutes,
             CancellationToken cancellationToken)
         {
@@ -176,9 +171,18 @@ namespace Smapi.API.Controllers
                 return BadRequest(new { success = false, message = "User ID is required." });
             }
 
-            var post = await _context.FacebookPostUrls
+            pageId = string.IsNullOrWhiteSpace(pageId) ? null : pageId.Trim();
+
+            var query = _context.FacebookPostUrls
                 .AsNoTracking()
-                .FirstOrDefaultAsync(item => item.Id == postId && item.UserId == userId, cancellationToken);
+                .Where(item => item.Id == postId && item.UserId == userId);
+
+            if (!string.IsNullOrWhiteSpace(pageId))
+            {
+                query = query.Where(item => item.PageId == pageId);
+            }
+
+            var post = await query.FirstOrDefaultAsync(cancellationToken);
 
             if (post is null)
             {

@@ -54,7 +54,11 @@ namespace Smapi.API.Services
 
         public string BuildStorageKey(string pageName, string pageId, string category, int itemId)
         {
-            var pageSegment = ToSafePathSegment(FirstNonEmpty(pageName, pageId) ?? "facebook-page");
+            var pageSegment = ToSafePathSegment(
+                string.Join(
+                    "-",
+                    new[] { FirstNonEmpty(pageName, "facebook-page"), pageId }
+                        .Where(value => !string.IsNullOrWhiteSpace(value))));
             var categorySegment = ToSafePathSegment(category);
             var dateSegment = DateTime.UtcNow.ToString("yyyy/MM/dd", CultureInfo.InvariantCulture);
 

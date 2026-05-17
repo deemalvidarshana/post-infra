@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 interface FBPage {
   databaseId: number;
+  userId: string;
   pageId: string;
   name: string;
   category: string;
@@ -15,6 +16,7 @@ interface FBPage {
 
 interface FacebookPageApi {
   id: number;
+  userId?: string;
   pageId: string;
   pageName: string;
   category?: string;
@@ -23,7 +25,7 @@ interface FacebookPageApi {
 }
 
 export default function FacebookAccountsPage() {
-  const [userId, setUserId] = useState(() => getStoredUserId());
+  const [userId, setUserId] = useState('');
   const [pages, setPages] = useState<FBPage[]>([]);
   const [message, setMessage] = useState('');
   const [modalMessage, setModalMessage] = useState('');
@@ -42,20 +44,19 @@ export default function FacebookAccountsPage() {
   const hasLoadedStoredUser = useRef(false);
 
   const fetchPages = useCallback(async (nextUserId = userId) => {
-    if (!nextUserId.trim()) {
-      setMessage('Enter a User ID before loading Facebook pages.');
-      return;
-    }
-
     setIsLoading(true);
     setMessage('');
-    window.localStorage.setItem('smapi_user_id', nextUserId.trim());
+    if (nextUserId.trim()) {
+      window.localStorage.setItem('smapi_user_id', nextUserId.trim());
+    }
 
     try {
-      const response = await fetch(`/api/smapi/Pages/facebook/${encodeURIComponent(nextUserId.trim())}`);
+      const response = await fetch('/api/smapi/Pages/facebook');
       const data = await response.json();
       if (Array.isArray(data)) {
         setPages((data as FacebookPageApi[]).map(toPageViewModel));
+      } else {
+        setPages([]);
       }
     } catch {
       setMessage('Failed to fetch Facebook pages from the backend.');
@@ -65,12 +66,17 @@ export default function FacebookAccountsPage() {
   }, [userId]);
 
   useEffect(() => {
-    if (hasLoadedStoredUser.current || !userId.trim()) {
+    if (hasLoadedStoredUser.current) {
       return;
     }
 
     hasLoadedStoredUser.current = true;
-    void fetchPages(userId);
+    const storedUserId = getStoredUserId();
+    if (storedUserId) {
+      window.setTimeout(() => setUserId(storedUserId), 0);
+    }
+
+    void fetchPages(storedUserId);
   }, [fetchPages, userId]);
 
   const resetForm = () => {
@@ -87,6 +93,10 @@ export default function FacebookAccountsPage() {
   const openEditModal = (page: FBPage) => {
     setEditingPage(page);
     setModalMessage('');
+    if (page.userId) {
+      setUserId(page.userId);
+      window.localStorage.setItem('smapi_user_id', page.userId);
+    }
     setFormData({
       name: page.name,
       pageId: page.pageId,
@@ -182,7 +192,7 @@ export default function FacebookAccountsPage() {
             value={userId}
             onChange={(event) => setUserId(event.target.value)}
             className="w-full sm:w-56 bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none"
-            placeholder="User ID"
+            placeholder="Owner/User ID"
           />
           <button
             type="button"
@@ -242,6 +252,7 @@ export default function FacebookAccountsPage() {
               <div className="flex-grow min-w-0">
                 <h3 className="text-lg font-bold text-white truncate">{page.name}</h3>
                 <p className="text-neutral-500 text-[10px] truncate">ID: {page.pageId}</p>
+                {page.userId && <p className="text-neutral-600 text-[10px] truncate">Owner: {page.userId}</p>}
                 <div className="mt-3 flex items-center gap-2 text-[10px] text-neutral-400 bg-black/30 p-2 rounded border border-white/5">
                   <span className="material-symbols-outlined text-xs">key</span>
                   <span className="truncate">Token: {maskToken(page.accessToken)}</span>
@@ -251,14 +262,14 @@ export default function FacebookAccountsPage() {
 
             <div className="mt-6 space-y-3">
               <Link
-                href={`/accounts/facebook/${encodeURIComponent(page.pageId)}/apify`}
+                href={pageToolHref(page, 'apify', userId)}
                 className="w-full py-2.5 rounded bg-blue-600 text-xs font-bold text-white hover:bg-blue-500 transition-colors border border-blue-400/20 flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-sm">travel_explore</span>
                 Reels Scraper
               </Link>
               <Link
-                href={`/accounts/facebook/${encodeURIComponent(page.pageId)}/rednote`}
+                href={pageToolHref(page, 'rednote', userId)}
                 className="w-full py-2.5 rounded bg-rose-600 text-xs font-bold text-white hover:bg-rose-500 transition-colors border border-rose-400/20 flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-sm">download</span>
@@ -266,7 +277,7 @@ export default function FacebookAccountsPage() {
               </Link>
               <div className="flex gap-3">
                 <Link
-                  href={`/accounts/facebook/${encodeURIComponent(page.pageId)}/queue`}
+                  href={pageToolHref(page, 'queue', userId)}
                   className="flex-grow py-2 rounded bg-white/5 text-xs font-bold text-white hover:bg-white/10 transition-colors border border-white/5 text-center"
                 >
                   Upload Queue
@@ -418,6 +429,7 @@ export default function FacebookAccountsPage() {
 function toPageViewModel(page: FacebookPageApi): FBPage {
   return {
     databaseId: page.id,
+    userId: page.userId || '',
     pageId: page.pageId,
     name: page.pageName,
     category: page.category || '',
@@ -425,6 +437,12 @@ function toPageViewModel(page: FacebookPageApi): FBPage {
     avatar: page.avatarUrl || '',
     status: 'connected'
   };
+}
+
+function pageToolHref(page: FBPage, tool: 'apify' | 'rednote' | 'queue', fallbackUserId: string) {
+  const href = `/accounts/facebook/${encodeURIComponent(page.pageId)}/${tool}`;
+  const ownerUserId = page.userId || fallbackUserId.trim();
+  return ownerUserId ? `${href}?userId=${encodeURIComponent(ownerUserId)}` : href;
 }
 
 function maskToken(token: string) {

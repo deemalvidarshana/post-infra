@@ -54,6 +54,24 @@ namespace Smapi.API.Controllers
             return Ok(page);
         }
 
+        [HttpGet("facebook")]
+        public async Task<ActionResult<IEnumerable<FacebookPage>>> GetAllFacebookPages(
+            [FromQuery] string? userId,
+            CancellationToken cancellationToken)
+        {
+            userId = string.IsNullOrWhiteSpace(userId) ? null : userId.Trim();
+
+            var query = _context.FacebookPages.AsNoTracking();
+            if (!string.IsNullOrWhiteSpace(userId))
+            {
+                query = query.Where(p => p.UserId == userId);
+            }
+
+            return await query
+                .OrderByDescending(p => p.ConnectedAt)
+                .ToListAsync(cancellationToken);
+        }
+
         [HttpGet("facebook/{userId}")]
         public async Task<ActionResult<IEnumerable<FacebookPage>>> GetFacebookPages(string userId)
         {
@@ -152,7 +170,12 @@ namespace Smapi.API.Controllers
             request.StartUrls = validStartUrls.Select(url => new FacebookStartUrl { Url = url }).ToList();
             request.ResultsLimit = Math.Clamp(request.ResultsLimit, 1, 1000);
             request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
-            request.PageId = string.IsNullOrWhiteSpace(request.PageId) ? null : request.PageId.Trim();
+            request.PageId = request.PageId?.Trim();
+
+            if (string.IsNullOrWhiteSpace(request.PageId))
+            {
+                return BadRequest(new { success = false, message = "Facebook Page ID is required for page-scoped scraping." });
+            }
 
             IReadOnlyList<ApifyFacebookPostItem> scrapedItems;
             try
@@ -187,14 +210,9 @@ namespace Smapi.API.Controllers
             var urls = scrapedPosts.Select(post => post.Url!).ToList();
             var existingPostsQuery = _context.FacebookPostUrls
                 .Where(post => post.UserId == request.UserId
+                    && post.PageId == request.PageId
                     && post.Platform == SocialPostPlatform.Facebook
                     && urls.Contains(post.PermalinkUrl));
-
-            if (!string.IsNullOrWhiteSpace(request.PageId))
-            {
-                existingPostsQuery = existingPostsQuery
-                    .Where(post => post.PageId == request.PageId || post.PageId == null);
-            }
 
             var existingPosts = (await existingPostsQuery
                     .OrderByDescending(post => post.PageId == request.PageId)
@@ -218,7 +236,7 @@ namespace Smapi.API.Controllers
                     
                     existingPost.Platform = SocialPostPlatform.Facebook;
                     existingPost.PostId = FirstNonEmpty(item.GetItemId(), existingPost.PostId);
-                    existingPost.PageId = FirstNonEmpty(existingPost.PageId, request.PageId);
+                    existingPost.PageId = request.PageId;
                     existingPost.SourcePageUrl = FirstNonEmpty(NormalizeUrl(item.GetSourcePageUrl()), existingPost.SourcePageUrl);
                     existingPost.VideoUrl = FirstNonEmpty(item.GetVideoUrl(), existingPost.VideoUrl);
                     existingPost.PostCreatedAt = item.GetCreatedAt() ?? existingPost.PostCreatedAt;
@@ -303,9 +321,12 @@ namespace Smapi.API.Controllers
             request.Profiles = validProfiles;
             request.ResultsPerPage = Math.Clamp(request.ResultsPerPage, 1, 1000);
             request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
-            request.PageId = string.IsNullOrWhiteSpace(request.PageId)
-                ? ExtractTikTokHandle(validProfiles[0]) ?? "tiktok"
-                : request.PageId.Trim();
+            request.PageId = request.PageId?.Trim();
+
+            if (string.IsNullOrWhiteSpace(request.PageId))
+            {
+                return BadRequest(new { success = false, message = "Facebook Page ID is required for page-scoped TikTok scraping." });
+            }
 
             IReadOnlyList<ApifyTikTokPostItem> scrapedItems;
             try
@@ -340,14 +361,9 @@ namespace Smapi.API.Controllers
             var urls = scrapedPosts.Select(post => post.Url!).ToList();
             var existingPostsQuery = _context.FacebookPostUrls
                 .Where(post => post.UserId == request.UserId
+                    && post.PageId == request.PageId
                     && post.Platform == SocialPostPlatform.TikTok
                     && urls.Contains(post.PermalinkUrl));
-
-            if (!string.IsNullOrWhiteSpace(request.PageId))
-            {
-                existingPostsQuery = existingPostsQuery
-                    .Where(post => post.PageId == request.PageId || post.PageId == null);
-            }
 
             var existingPosts = (await existingPostsQuery
                     .OrderByDescending(post => post.PageId == request.PageId)
@@ -368,7 +384,7 @@ namespace Smapi.API.Controllers
                 {
                     existingPost.Platform = SocialPostPlatform.TikTok;
                     existingPost.PostId = FirstNonEmpty(item.GetItemId(), existingPost.PostId);
-                    existingPost.PageId = FirstNonEmpty(existingPost.PageId, request.PageId);
+                    existingPost.PageId = request.PageId;
                     existingPost.SourcePageUrl = FirstNonEmpty(NormalizeUrl(item.GetProfileUrl()), existingPost.SourcePageUrl);
                     existingPost.VideoUrl = FirstNonEmpty(item.GetVideoUrl(), existingPost.VideoUrl);
                     existingPost.PostCreatedAt = item.GetCreatedAt() ?? existingPost.PostCreatedAt;
@@ -842,9 +858,27 @@ namespace Smapi.API.Controllers
         }
 
         [HttpDelete("facebook/posts/{id}")]
-        public async Task<IActionResult> DeleteFacebookPost(int id)
+        public async Task<IActionResult> DeleteFacebookPost(
+            int id,
+            [FromQuery] string? userId,
+            [FromQuery] string? pageId,
+            CancellationToken cancellationToken)
         {
-            var post = await _context.FacebookPostUrls.FindAsync(id);
+            userId = string.IsNullOrWhiteSpace(userId) ? null : userId.Trim();
+            pageId = string.IsNullOrWhiteSpace(pageId) ? null : pageId.Trim();
+
+            var query = _context.FacebookPostUrls.Where(post => post.Id == id);
+            if (!string.IsNullOrWhiteSpace(userId))
+            {
+                query = query.Where(post => post.UserId == userId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(pageId))
+            {
+                query = query.Where(post => post.PageId == pageId);
+            }
+
+            var post = await query.FirstOrDefaultAsync(cancellationToken);
             if (post == null)
             {
                 return NotFound(new { success = false, message = "Post not found." });
@@ -878,7 +912,7 @@ namespace Smapi.API.Controllers
             }
 
             _context.FacebookPostUrls.Remove(post);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
 
             return Ok(new { success = true, message = "Facebook post deleted successfully." });
         }

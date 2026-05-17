@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface RedNoteDownload {
@@ -42,8 +42,10 @@ interface RedNoteCaptionRetryResponse {
 
 export default function RedNoteDownloaderPage() {
   const params = useParams<{ pageId: string }>();
+  const searchParams = useSearchParams();
   const pageId = useMemo(() => safeDecode(params.pageId), [params.pageId]);
-  const [userId, setUserId] = useState(() => getStoredUserId());
+  const routeUserId = searchParams.get("userId") || "";
+  const [userId, setUserId] = useState("");
   const [links, setLinks] = useState("");
   const [captionPrompt, setCaptionPrompt] = useState("");
   const [promptUpdatedAt, setPromptUpdatedAt] = useState("");
@@ -54,6 +56,8 @@ export default function RedNoteDownloaderPage() {
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [busyPostIds, setBusyPostIds] = useState<number[]>([]);
   const hasLoadedStoredUser = useRef(false);
+  const appliedRouteUserId = useRef("");
+  const appliedStoredUserId = useRef(false);
 
   const runningDownloads = useMemo(
     () => downloads.filter((item) => canStopLocalDownload(item.s3UploadStatus)),
@@ -81,7 +85,7 @@ export default function RedNoteDownloaderPage() {
       );
       const data = await response.json();
       if (Array.isArray(data)) {
-        setDownloads(data as RedNoteDownload[]);
+        setDownloads((data as RedNoteDownload[]).filter((item) => item.pageId === pageId));
       }
     } catch {
       setMessage("Could not load RedNote downloads from the backend.");
@@ -117,6 +121,23 @@ export default function RedNoteDownloaderPage() {
   }, [pageId, userId]);
 
   useEffect(() => {
+    if (routeUserId && appliedRouteUserId.current !== routeUserId) {
+      appliedRouteUserId.current = routeUserId;
+      window.setTimeout(() => setUserId(routeUserId), 0);
+      window.localStorage.setItem("smapi_user_id", routeUserId);
+      hasLoadedStoredUser.current = false;
+      return;
+    }
+
+    if (!routeUserId && !appliedStoredUserId.current) {
+      appliedStoredUserId.current = true;
+      const storedUserId = getStoredUserId();
+      if (storedUserId && storedUserId !== userId) {
+        window.setTimeout(() => setUserId(storedUserId), 0);
+        return;
+      }
+    }
+
     if (hasLoadedStoredUser.current || !userId.trim()) {
       return;
     }
@@ -124,7 +145,7 @@ export default function RedNoteDownloaderPage() {
     hasLoadedStoredUser.current = true;
     void loadDownloads(userId);
     void loadCaptionPrompt(userId);
-  }, [loadCaptionPrompt, loadDownloads, userId]);
+  }, [loadCaptionPrompt, loadDownloads, routeUserId, userId]);
 
   useEffect(() => {
     if (!userId.trim() || runningDownloads.length === 0) {
@@ -192,7 +213,7 @@ export default function RedNoteDownloaderPage() {
 
       setMessage(data.message || `Queued ${data.queuedCount ?? 0} RedNote video(s).`);
       setDownloads((previousDownloads) => {
-        const merged = [...(data.posts || []), ...previousDownloads];
+        const merged = [...(data.posts || []).filter((item) => item.pageId === pageId), ...previousDownloads];
         const seen = new Set<string>();
         return merged.filter((item) => {
           const key = item.permalinkUrl.toLowerCase();
@@ -335,7 +356,7 @@ export default function RedNoteDownloaderPage() {
 
     try {
       const response = await fetch(
-        `/api/smapi/FacebookS3Uploads/facebook/reels/${post.id}/url?userId=${encodeURIComponent(userId.trim())}&expiresMinutes=60`
+        `/api/smapi/FacebookS3Uploads/facebook/reels/${post.id}/url?userId=${encodeURIComponent(userId.trim())}&pageId=${encodeURIComponent(pageId)}&expiresMinutes=60`
       );
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.success || !data.url) {
@@ -410,9 +431,10 @@ export default function RedNoteDownloaderPage() {
     setBusyPostIds((currentIds) => Array.from(new Set([...currentIds, post.id])));
 
     try {
-      const response = await fetch(`/api/smapi/Pages/facebook/posts/${post.id}`, {
-        method: "DELETE"
-      });
+      const response = await fetch(
+        `/api/smapi/Pages/facebook/posts/${post.id}?userId=${encodeURIComponent(userId.trim())}&pageId=${encodeURIComponent(pageId)}`,
+        { method: "DELETE" }
+      );
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         setMessage(data?.message || `Delete failed with status ${response.status}.`);

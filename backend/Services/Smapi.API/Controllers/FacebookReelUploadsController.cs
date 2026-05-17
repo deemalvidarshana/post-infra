@@ -119,7 +119,7 @@ namespace Smapi.API.Controllers
                     .FirstOrDefaultAsync(
                         post => post.UserId == request.UserId
                             && post.Id == request.FacebookPostUrlId.Value
-                            && (post.PageId == request.PageId || post.PageId == null),
+                            && post.PageId == request.PageId,
                         cancellationToken);
 
                 if (scrapedPost is null)

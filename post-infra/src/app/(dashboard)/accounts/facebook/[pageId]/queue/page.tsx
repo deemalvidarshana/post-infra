@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 interface FacebookPageApi {
   id: number;
@@ -55,8 +55,10 @@ type SourcePlatform = "Facebook" | "TikTok" | "RedNote";
 export default function QueuePage() {
   const params = useParams<{ pageId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const routePageId = useMemo(() => safeDecode(params.pageId), [params.pageId]);
-  const [userId, setUserId] = useState(() => getStoredUserId());
+  const routeUserId = searchParams.get("userId") || "";
+  const [userId, setUserId] = useState("");
   const [pages, setPages] = useState<FacebookPageApi[]>([]);
   const [posts, setPosts] = useState<ScrapedPost[]>([]);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
@@ -71,6 +73,8 @@ export default function QueuePage() {
     graphApiVersion: "v24.0"
   });
   const hasLoadedStoredUser = useRef(false);
+  const appliedRouteUserId = useRef("");
+  const appliedStoredUserId = useRef(false);
   const previousSourcePlatform = useRef<SourcePlatform>("Facebook");
   const selectedPage = useMemo(
     () => pages.find((page) => page.pageId === routePageId) ?? null,
@@ -183,13 +187,30 @@ export default function QueuePage() {
   }, [loadJobs, userId]);
 
   useEffect(() => {
+    if (routeUserId && appliedRouteUserId.current !== routeUserId) {
+      appliedRouteUserId.current = routeUserId;
+      window.setTimeout(() => setUserId(routeUserId), 0);
+      window.localStorage.setItem("smapi_user_id", routeUserId);
+      hasLoadedStoredUser.current = false;
+      return;
+    }
+
+    if (!routeUserId && !appliedStoredUserId.current) {
+      appliedStoredUserId.current = true;
+      const storedUserId = getStoredUserId();
+      if (storedUserId && storedUserId !== userId) {
+        window.setTimeout(() => setUserId(storedUserId), 0);
+        return;
+      }
+    }
+
     if (hasLoadedStoredUser.current || !userId.trim()) {
       return;
     }
 
     hasLoadedStoredUser.current = true;
     void loadData(userId);
-  }, [loadData, userId]);
+  }, [loadData, routeUserId, userId]);
 
   useEffect(() => {
     if (!hasLoadedStoredUser.current || !userId.trim()) {

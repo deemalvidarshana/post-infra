@@ -48,7 +48,7 @@ namespace Smapi.API.Services
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Unexpected local download worker error for scraped post {PostId}.", workItem.PostId);
-                    await MarkFailedAsync(workItem.PostId, ex.Message, CancellationToken.None);
+                    await MarkFailedAsync(workItem, ex.Message, CancellationToken.None);
                 }
             }
         }
@@ -68,7 +68,11 @@ namespace Smapi.API.Services
                 var captionGenerator = scope.ServiceProvider.GetRequiredService<IGeminiCaptionGenerator>();
 
                 var post = await dbContext.FacebookPostUrls
-                    .FirstAsync(item => item.Id == workItem.PostId && item.UserId == workItem.UserId, cancellationToken);
+                    .FirstAsync(
+                        item => item.Id == workItem.PostId
+                            && item.UserId == workItem.UserId
+                            && item.PageId == workItem.PageId,
+                        cancellationToken);
 
                 if (post.S3UploadStatus != FacebookPostS3UploadStatus.Queued)
                 {
@@ -135,7 +139,7 @@ namespace Smapi.API.Services
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 _logger.LogInformation("Local download stopped for scraped post {PostId}.", workItem.PostId);
-                await MarkCancelledAsync(workItem.PostId, CancellationToken.None);
+                await MarkCancelledAsync(workItem, CancellationToken.None);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -144,7 +148,7 @@ namespace Smapi.API.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Local download failed for scraped post {PostId}.", workItem.PostId);
-                await MarkFailedAsync(workItem.PostId, ex.Message, cancellationToken);
+                await MarkFailedAsync(workItem, ex.Message, cancellationToken);
             }
             finally
             {
@@ -153,11 +157,15 @@ namespace Smapi.API.Services
             }
         }
 
-        private async Task MarkFailedAsync(int postId, string errorMessage, CancellationToken cancellationToken)
+        private async Task MarkFailedAsync(FacebookPostS3UploadWorkItem workItem, string errorMessage, CancellationToken cancellationToken)
         {
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<SmapiDbContext>();
-            var post = await dbContext.FacebookPostUrls.FirstOrDefaultAsync(item => item.Id == postId, cancellationToken);
+            var post = await dbContext.FacebookPostUrls.FirstOrDefaultAsync(
+                item => item.Id == workItem.PostId
+                    && item.UserId == workItem.UserId
+                    && item.PageId == workItem.PageId,
+                cancellationToken);
 
             if (post is null)
             {
@@ -169,11 +177,15 @@ namespace Smapi.API.Services
             await dbContext.SaveChangesAsync(cancellationToken);
         }
 
-        private async Task MarkCancelledAsync(int postId, CancellationToken cancellationToken)
+        private async Task MarkCancelledAsync(FacebookPostS3UploadWorkItem workItem, CancellationToken cancellationToken)
         {
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<SmapiDbContext>();
-            var post = await dbContext.FacebookPostUrls.FirstOrDefaultAsync(item => item.Id == postId, cancellationToken);
+            var post = await dbContext.FacebookPostUrls.FirstOrDefaultAsync(
+                item => item.Id == workItem.PostId
+                    && item.UserId == workItem.UserId
+                    && item.PageId == workItem.PageId,
+                cancellationToken);
 
             if (post is null)
             {
