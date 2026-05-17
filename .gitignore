@@ -50,6 +50,7 @@ next-env.d.ts
 # App Specific
 **/downloads/
 **/logs/
+/rednote/
 
 # Temporary / Scratch
 *.png

@@ -13,15 +13,18 @@ namespace Smapi.API.Controllers
     {
         private readonly SmapiDbContext _context;
         private readonly IFacebookReelUploadQueue _queue;
+        private readonly ILocalVideoStorageService _storage;
         private readonly ILogger<FacebookReelUploadsController> _logger;
 
         public FacebookReelUploadsController(
             SmapiDbContext context, 
             IFacebookReelUploadQueue queue,
+            ILocalVideoStorageService storage,
             ILogger<FacebookReelUploadsController> logger)
         {
             _context = context;
             _queue = queue;
+            _storage = storage;
             _logger = logger;
         }
 
@@ -29,6 +32,7 @@ namespace Smapi.API.Controllers
         public async Task<ActionResult<IEnumerable<FacebookReelUploadJobResponse>>> GetJobs(
             string userId,
             [FromQuery] string? pageId,
+            [FromQuery] string? platform,
             CancellationToken cancellationToken)
         {
             var query = _context.FacebookReelUploadJobs
@@ -38,6 +42,13 @@ namespace Smapi.API.Controllers
             if (!string.IsNullOrWhiteSpace(pageId))
             {
                 query = query.Where(job => job.PageId == pageId);
+            }
+
+            var normalizedPlatform = NormalizeSourcePlatform(platform);
+            if (!string.IsNullOrWhiteSpace(normalizedPlatform))
+            {
+                query = query.Where(job => job.FacebookPostUrl != null
+                    && job.FacebookPostUrl.Platform == normalizedPlatform);
             }
 
             var jobs = await query
@@ -84,6 +95,7 @@ namespace Smapi.API.Controllers
             request.UserId = request.UserId.Trim();
             request.PageId = request.PageId.Trim();
             request.GraphApiVersion = NormalizeGraphApiVersion(request.GraphApiVersion);
+            request.Platform = NormalizeSourcePlatform(request.Platform) ?? SocialPostPlatform.Facebook;
 
             if (string.IsNullOrWhiteSpace(request.UserId)
                 || string.IsNullOrWhiteSpace(request.PageId))
@@ -104,7 +116,6 @@ namespace Smapi.API.Controllers
             if (request.FacebookPostUrlId.HasValue)
             {
                 scrapedPost = await _context.FacebookPostUrls
-                    .AsNoTracking()
                     .FirstOrDefaultAsync(
                         post => post.UserId == request.UserId
                             && post.Id == request.FacebookPostUrlId.Value
@@ -114,6 +125,20 @@ namespace Smapi.API.Controllers
                 if (scrapedPost is null)
                 {
                     return BadRequest(new { success = false, message = "Selected scraped reel was not found for this user." });
+                }
+
+                if (scrapedPost.Platform != request.Platform
+                    || scrapedPost.S3UploadStatus is not (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                    || string.IsNullOrWhiteSpace(scrapedPost.S3Key)
+                    || !HasExistingLocalDownload(scrapedPost))
+                {
+                    if (scrapedPost.Platform == request.Platform)
+                    {
+                        MarkLocalDownloadMissing(scrapedPost);
+                        await _context.SaveChangesAsync(cancellationToken);
+                    }
+
+                    return BadRequest(new { success = false, message = $"Only locally downloaded {request.Platform} videos can be queued for publishing." });
                 }
             }
 
@@ -129,7 +154,9 @@ namespace Smapi.API.Controllers
                 return BadRequest(new { success = false, message = "A valid direct video URL or scraped reel URL is required." });
             }
 
-            var caption = FirstNonEmpty(request.Caption, scrapedPost?.Caption);
+            var caption = request.Platform == SocialPostPlatform.RedNote
+                ? null
+                : FirstNonEmpty(request.Caption, scrapedPost?.Caption);
             var job = new FacebookReelUploadJob
             {
                 UserId = request.UserId,
@@ -138,6 +165,9 @@ namespace Smapi.API.Controllers
                 FacebookPostUrlId = scrapedPost?.Id,
                 VideoSourceUrl = videoSourceUrl,
                 Caption = caption,
+                S3Key = scrapedPost?.S3Key,
+                S3Bucket = scrapedPost?.S3Bucket,
+                S3Region = scrapedPost?.S3Region,
                 Status = FacebookReelUploadJobStatus.Queued,
                 GraphApiVersion = request.GraphApiVersion,
                 ScheduledFor = DateTime.UtcNow,
@@ -162,9 +192,10 @@ namespace Smapi.API.Controllers
             request.UserId = request.UserId.Trim();
             request.PageId = request.PageId.Trim();
             request.GraphApiVersion = NormalizeGraphApiVersion(request.GraphApiVersion);
+            request.Platform = NormalizeSourcePlatform(request.Platform) ?? SocialPostPlatform.Facebook;
 
-            _logger.LogInformation("CreateBatch request received. UserId: {UserId}, PageId: {PageId}, DailyPostCount: {DailyPostCount}, StartAt: {StartAt}", 
-                request.UserId, request.PageId, request.DailyPostCount, request.StartAt);
+            _logger.LogInformation("CreateBatch request received. UserId: {UserId}, PageId: {PageId}, Platform: {Platform}, DailyPostCount: {DailyPostCount}, StartAt: {StartAt}", 
+                request.UserId, request.PageId, request.Platform, request.DailyPostCount, request.StartAt);
 
             if (string.IsNullOrWhiteSpace(request.UserId)
                 || string.IsNullOrWhiteSpace(request.PageId))
@@ -196,12 +227,37 @@ namespace Smapi.API.Controllers
             _logger.LogInformation("CreateBatch: Found page {PageName}. Starting job creation.", page.PageName);
 
             var matchedPosts = await _context.FacebookPostUrls
-                .AsNoTracking()
                 .Where(post => post.UserId == request.UserId)
                 .Where(post => post.PageId == request.PageId)
+                .Where(post => post.Platform == request.Platform)
+                .Where(post => (post.S3UploadStatus == FacebookPostS3UploadStatus.Downloaded
+                        || post.S3UploadStatus == FacebookPostS3UploadStatus.Uploaded)
+                    && post.S3Key != null
+                    && post.S3Key != "")
                 .OrderByDescending(post => post.PostCreatedAt ?? post.ScrapedAt)
                 .Take(500)
                 .ToListAsync(cancellationToken);
+
+            var missingLocalFileCount = 0;
+            var availablePosts = new List<FacebookPostUrl>();
+            foreach (var post in matchedPosts)
+            {
+                if (HasExistingLocalDownload(post))
+                {
+                    availablePosts.Add(post);
+                    continue;
+                }
+
+                MarkLocalDownloadMissing(post);
+                missingLocalFileCount++;
+            }
+
+            if (missingLocalFileCount > 0)
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+
+            matchedPosts = availablePosts;
 
             var matchedPostIds = matchedPosts.Select(post => post.Id).ToList();
             var alreadyQueuedPostIds = matchedPostIds.Count == 0
@@ -245,7 +301,10 @@ namespace Smapi.API.Controllers
                     PageName = page.PageName,
                     FacebookPostUrlId = post.Id,
                     VideoSourceUrl = videoSourceUrl,
-                    Caption = post.Caption,
+                    Caption = request.Platform == SocialPostPlatform.RedNote ? null : post.Caption,
+                    S3Key = post.S3Key,
+                    S3Bucket = post.S3Bucket,
+                    S3Region = post.S3Region,
                     Status = FacebookReelUploadJobStatus.Queued,
                     GraphApiVersion = request.GraphApiVersion,
                     ScheduledFor = scheduledFor,
@@ -268,7 +327,8 @@ namespace Smapi.API.Controllers
                             UserId = request.UserId,
                             PageId = request.PageId,
                             FacebookPostUrlId = job.FacebookPostUrlId,
-                            GraphApiVersion = request.GraphApiVersion
+                            GraphApiVersion = request.GraphApiVersion,
+                            Platform = request.Platform
                         }),
                         cancellationToken);
                 }
@@ -279,12 +339,12 @@ namespace Smapi.API.Controllers
                 Success = true,
                 MatchedCount = matchedPosts.Count,
                 QueuedCount = jobs.Count,
-                SkippedCount = skippedCount,
+                SkippedCount = skippedCount + missingLocalFileCount,
                 IntervalHours = interval.TotalHours,
                 Jobs = jobs.Select(ToResponse).ToList(),
                 Message = jobs.Count == 0
-                    ? $"No new reels were queued. Matched {matchedPosts.Count}, skipped {skippedCount}."
-                    : $"Queued {jobs.Count} reel(s) at every {interval.TotalHours:0.##} hour(s). Skipped {skippedCount}."
+                    ? $"No new {request.Platform} videos were queued. Matched {matchedPosts.Count}, skipped {skippedCount + missingLocalFileCount}."
+                    : $"Queued {jobs.Count} {request.Platform} video(s) at every {interval.TotalHours:0.##} hour(s). Skipped {skippedCount + missingLocalFileCount}."
             });
         }
 
@@ -327,6 +387,61 @@ namespace Smapi.API.Controllers
             }
 
             return graphApiVersion.StartsWith('v') ? graphApiVersion : $"v{graphApiVersion}";
+        }
+
+        private static string? NormalizeSourcePlatform(string? platform)
+        {
+            platform = platform?.Trim();
+            if (string.IsNullOrWhiteSpace(platform))
+            {
+                return null;
+            }
+
+            if (platform.Equals(SocialPostPlatform.Facebook, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.Facebook;
+            }
+
+            if (platform.Equals(SocialPostPlatform.TikTok, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.TikTok;
+            }
+
+            if (platform.Equals(SocialPostPlatform.RedNote, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.RedNote;
+            }
+
+            return null;
+        }
+
+        private bool HasExistingLocalDownload(FacebookPostUrl post)
+        {
+            if (post.S3UploadStatus is not (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                || string.IsNullOrWhiteSpace(post.S3Key))
+            {
+                return false;
+            }
+
+            try
+            {
+                return System.IO.File.Exists(_storage.GetAbsolutePath(post.S3Key));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Invalid local storage key for post {PostId}.", post.Id);
+                return false;
+            }
+        }
+
+        private static void MarkLocalDownloadMissing(FacebookPostUrl post)
+        {
+            post.S3UploadStatus = FacebookPostS3UploadStatus.NotUploaded;
+            post.S3Bucket = null;
+            post.S3Region = null;
+            post.S3Key = null;
+            post.S3UploadedAt = null;
+            post.S3UploadError = "Local video file is missing. Download it again.";
         }
 
         private static DateTime NormalizeUtc(DateTime value)

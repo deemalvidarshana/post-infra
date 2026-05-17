@@ -12,7 +12,12 @@ namespace Smapi.API.Services
         Task<IReadOnlyList<ApifyFacebookPostItem>> ScrapePostsAsync(FacebookScrapeRequest request, CancellationToken cancellationToken);
     }
 
-    public class ApifyFacebookPostsClient : IApifyFacebookPostsClient
+    public interface IApifyTikTokPostsClient
+    {
+        Task<IReadOnlyList<ApifyTikTokPostItem>> ScrapePostsAsync(TikTokScrapeRequest request, CancellationToken cancellationToken);
+    }
+
+    public class ApifyFacebookPostsClient : IApifyFacebookPostsClient, IApifyTikTokPostsClient
     {
         private const string GlobalApifySettingUserId = "__global__";
         private const int MaxActorAttempts = 3;
@@ -54,10 +59,35 @@ namespace Smapi.API.Services
                 startUrls = request.StartUrls.Select(url => new { url = url.Url }).ToList()
             };
 
-            var reelItems = await RunActorAsync(reelsActorId, reelsInput, token, cancellationToken);
+            var reelItems = await RunActorAsync<ApifyFacebookPostItem>(reelsActorId, reelsInput, token, cancellationToken);
             await TryEnrichCaptionsAsync(reelItems, request.StartUrls, request.ResultsLimit, token, cancellationToken);
 
             return reelItems;
+        }
+
+        public async Task<IReadOnlyList<ApifyTikTokPostItem>> ScrapePostsAsync(TikTokScrapeRequest request, CancellationToken cancellationToken)
+        {
+            var token = await ResolveApiTokenAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException("Save an Apify API key in Settings before scraping.");
+            }
+
+            var actorId = _configuration["Apify:TikTokProfileActorId"] ?? "clockworks~tiktok-profile-scraper";
+            var actorInput = new
+            {
+                excludePinnedPosts = false,
+                newestPostDate = (request.NewestPostDate ?? DateOnly.FromDateTime(DateTime.UtcNow)).ToString("yyyy-MM-dd"),
+                oldestPostDateUnified = request.OldestPostDateUnified?.ToString("yyyy-MM-dd"),
+                profiles = request.Profiles,
+                resultsPerPage = request.ResultsPerPage,
+                shouldDownloadAvatars = false,
+                shouldDownloadCovers = false,
+                shouldDownloadSlideshowImages = false,
+                shouldDownloadVideos = false
+            };
+
+            return await RunActorAsync<ApifyTikTokPostItem>(actorId, actorInput, token, cancellationToken);
         }
 
         private async Task TryEnrichCaptionsAsync(
@@ -107,7 +137,7 @@ namespace Smapi.API.Services
                 : savedToken.Trim();
         }
 
-        private async Task<List<ApifyFacebookPostItem>> RunActorAsync(
+        private async Task<List<TItem>> RunActorAsync<TItem>(
             string actorId,
             object actorInput,
             string token,
@@ -138,7 +168,7 @@ namespace Smapi.API.Services
                         throw new InvalidOperationException(message);
                     }
 
-                    var items = JsonSerializer.Deserialize<List<ApifyFacebookPostItem>>(responseBody, JsonOptions);
+                    var items = JsonSerializer.Deserialize<List<TItem>>(responseBody, JsonOptions);
                     return items ?? [];
                 }
                 catch (Exception ex) when (attempt < MaxActorAttempts && IsTransientApifyFailure(ex))
@@ -244,7 +274,7 @@ namespace Smapi.API.Services
                 startUrls = enrichmentUrls
             };
 
-            var captionItems = await RunActorAsync(postsActorId, postsInput, token, cancellationToken);
+            var captionItems = await RunActorAsync<ApifyFacebookPostItem>(postsActorId, postsInput, token, cancellationToken);
             var captionsByUrl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var captionsById = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -492,6 +522,240 @@ namespace Smapi.API.Services
                 JsonValueKind.Number => value.ToString(),
                 _ => null
             };
+        }
+
+        private DateTime? GetDateTime(string propertyName)
+        {
+            var value = GetString(propertyName);
+            if (DateTimeOffset.TryParse(value, out var dateTimeOffset))
+            {
+                return dateTimeOffset.UtcDateTime;
+            }
+
+            return DateTime.TryParse(value, out var dateTime)
+                ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                : null;
+        }
+
+        private DateTime? GetUnixDateTime(string propertyName)
+        {
+            if (ExtraFields is null || !ExtraFields.TryGetValue(propertyName, out var value))
+            {
+                return null;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var unixSeconds))
+            {
+                return DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
+            }
+
+            var rawValue = GetString(propertyName);
+            return long.TryParse(rawValue, out unixSeconds)
+                ? DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime
+                : null;
+        }
+
+        private static string? FirstNonEmpty(params string?[] values)
+        {
+            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        }
+    }
+
+    public class ApifyTikTokPostItem
+    {
+        [JsonPropertyName("webVideoUrl")]
+        public string? WebVideoUrl { get; set; }
+
+        [JsonPropertyName("text")]
+        public string? Text { get; set; }
+
+        [JsonPropertyName("createTimeISO")]
+        public DateTime? CreateTimeIso { get; set; }
+
+        [JsonPropertyName("authorMeta.name")]
+        public string? AuthorName { get; set; }
+
+        [JsonPropertyName("diggCount")]
+        public long? DiggCount { get; set; }
+
+        [JsonPropertyName("shareCount")]
+        public long? ShareCount { get; set; }
+
+        [JsonPropertyName("playCount")]
+        public long? PlayCount { get; set; }
+
+        [JsonPropertyName("commentCount")]
+        public long? CommentCount { get; set; }
+
+        [JsonPropertyName("videoMeta.duration")]
+        public int? DurationSeconds { get; set; }
+
+        [JsonPropertyName("musicMeta.musicName")]
+        public string? MusicName { get; set; }
+
+        [JsonPropertyName("musicMeta.musicAuthor")]
+        public string? MusicAuthor { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtraFields { get; set; }
+
+        public string? GetPermalinkUrl()
+        {
+            return FirstNonEmpty(
+                WebVideoUrl,
+                GetString("webVideoUrl"),
+                GetString("url"),
+                GetString("videoUrl"),
+                GetString("video", "url"));
+        }
+
+        public string? GetProfileUrl()
+        {
+            var authorName = GetAuthorName();
+            if (!string.IsNullOrWhiteSpace(authorName))
+            {
+                return $"https://www.tiktok.com/@{authorName.Trim().TrimStart('@')}";
+            }
+
+            return FirstNonEmpty(
+                GetString("authorMeta.profileUrl"),
+                GetString("authorMeta", "profileUrl"),
+                GetString("profileUrl"),
+                GetString("input"));
+        }
+
+        public string? GetItemId()
+        {
+            var directId = FirstNonEmpty(
+                GetString("id"),
+                GetString("videoId"),
+                GetString("videoMeta.id"),
+                GetString("videoMeta", "id"));
+
+            if (!string.IsNullOrWhiteSpace(directId))
+            {
+                return directId;
+            }
+
+            var permalinkUrl = GetPermalinkUrl();
+            if (Uri.TryCreate(permalinkUrl, UriKind.Absolute, out var uri))
+            {
+                var segments = uri.AbsolutePath
+                    .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var videoIndex = Array.FindIndex(segments, item => item.Equals("video", StringComparison.OrdinalIgnoreCase));
+                if (videoIndex >= 0 && videoIndex + 1 < segments.Length)
+                {
+                    return segments[videoIndex + 1];
+                }
+            }
+
+            return null;
+        }
+
+        public string? GetCaption()
+        {
+            return FirstNonEmpty(
+                Text,
+                GetString("text"),
+                GetString("description"),
+                GetString("caption"));
+        }
+
+        public string? GetVideoUrl()
+        {
+            return FirstNonEmpty(
+                GetString("videoUrl"),
+                GetString("videoURL"),
+                GetString("video_url"),
+                GetString("downloadUrl"),
+                GetString("download_url"),
+                GetString("videoMeta.downloadAddr"),
+                GetString("videoMeta", "downloadAddr"),
+                GetString("video", "downloadAddr"),
+                GetString("video", "url"));
+        }
+
+        public DateTime? GetCreatedAt()
+        {
+            return CreateTimeIso
+                ?? GetDateTime("createTimeISO")
+                ?? GetDateTime("createTime")
+                ?? GetDateTime("createdAt")
+                ?? GetUnixDateTime("createTime");
+        }
+
+        public string? GetAuthorName()
+        {
+            return FirstNonEmpty(
+                AuthorName,
+                GetString("authorMeta.name"),
+                GetString("authorMeta", "name"),
+                GetString("author"),
+                GetString("username"));
+        }
+
+        public long? GetLikeCount() => DiggCount ?? GetLong("diggCount") ?? GetLong("likeCount");
+
+        public long? GetShareCount() => ShareCount ?? GetLong("shareCount");
+
+        public long? GetPlayCount() => PlayCount ?? GetLong("playCount") ?? GetLong("viewCount");
+
+        public long? GetCommentCount() => CommentCount ?? GetLong("commentCount");
+
+        public int? GetDurationSeconds() => DurationSeconds ?? GetInt("videoMeta.duration") ?? GetInt("videoMeta", "duration");
+
+        public string? GetMusicName() => FirstNonEmpty(MusicName, GetString("musicMeta.musicName"), GetString("musicMeta", "musicName"));
+
+        public string? GetMusicAuthor() => FirstNonEmpty(MusicAuthor, GetString("musicMeta.musicAuthor"), GetString("musicMeta", "musicAuthor"));
+
+        private string? GetString(string propertyName)
+        {
+            if (ExtraFields is null || !ExtraFields.TryGetValue(propertyName, out var value))
+            {
+                return null;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.ToString(),
+                _ => null
+            };
+        }
+
+        private string? GetString(params string[] propertyPath)
+        {
+            if (ExtraFields is null || propertyPath.Length == 0 || !ExtraFields.TryGetValue(propertyPath[0], out var value))
+            {
+                return null;
+            }
+
+            for (var index = 1; index < propertyPath.Length; index++)
+            {
+                if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(propertyPath[index], out value))
+                {
+                    return null;
+                }
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.ToString(),
+                _ => null
+            };
+        }
+
+        private long? GetLong(params string[] propertyPath)
+        {
+            var value = propertyPath.Length == 1 ? GetString(propertyPath[0]) : GetString(propertyPath);
+            return long.TryParse(value, out var number) ? number : null;
+        }
+
+        private int? GetInt(params string[] propertyPath)
+        {
+            var value = propertyPath.Length == 1 ? GetString(propertyPath[0]) : GetString(propertyPath);
+            return int.TryParse(value, out var number) ? number : null;
         }
 
         private DateTime? GetDateTime(string propertyName)

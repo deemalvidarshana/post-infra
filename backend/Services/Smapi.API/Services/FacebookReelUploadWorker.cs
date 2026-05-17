@@ -88,36 +88,53 @@ namespace Smapi.API.Services
                     throw new InvalidOperationException("Connected Facebook page was not found for this user.");
                 }
 
-                job.Status = FacebookReelUploadJobStatus.Downloading;
+                job.Status = string.IsNullOrWhiteSpace(job.S3Key)
+                    ? FacebookReelUploadJobStatus.Downloading
+                    : FacebookReelUploadJobStatus.Publishing;
                 job.StartedAt ??= DateTime.UtcNow;
                 job.Attempts += 1;
                 job.UpdatedAt = DateTime.UtcNow;
                 await dbContext.SaveChangesAsync(cancellationToken);
 
-                var localVideoPath = await downloader.DownloadAsync(job.VideoSourceUrl, tempDirectory, cancellationToken);
-                await UpdateStatusAsync(workItem.JobId, FacebookReelUploadJobStatus.Downloaded, cancellationToken);
+                string uploadVideoPath;
+                if (!string.IsNullOrWhiteSpace(job.S3Key))
+                {
+                    uploadVideoPath = storage.GetAbsolutePath(job.S3Key);
+                    if (!File.Exists(uploadVideoPath))
+                    {
+                        throw new FileNotFoundException("Downloaded scraper video file was not found.", uploadVideoPath);
+                    }
 
-                var storageKey = storage.BuildStorageKey(page.PageName, job.PageId, "publishing-queue", job.Id);
-                var storageResult = await storage.StoreAsync(
-                    localVideoPath,
-                    storageKey,
-                    cancellationToken);
+                    _logger.LogInformation("Reel upload job {JobId} using existing scraper download at {VideoPath}.", job.Id, uploadVideoPath);
+                }
+                else
+                {
+                    var localVideoPath = await downloader.DownloadAsync(job.VideoSourceUrl, tempDirectory, cancellationToken);
+                    await UpdateStatusAsync(workItem.JobId, FacebookReelUploadJobStatus.Downloaded, cancellationToken);
 
-                job.S3Key = storageResult.Key;
-                job.S3Bucket = null;
-                job.S3Region = null;
-                job.S3EndpointUrl = null;
-                job.UpdatedAt = DateTime.UtcNow;
-                await dbContext.SaveChangesAsync(cancellationToken);
+                    var storageKey = storage.BuildStorageKey(page.PageName, job.PageId, "publishing-queue", job.Id);
+                    var storageResult = await storage.StoreAsync(
+                        localVideoPath,
+                        storageKey,
+                        cancellationToken);
 
-                _logger.LogInformation("Reel upload job {JobId} stored locally at {VideoPath}. Starting direct binary upload to Facebook.", job.Id, storageResult.AbsolutePath);
+                    job.S3Key = storageResult.Key;
+                    job.S3Bucket = null;
+                    job.S3Region = null;
+                    job.S3EndpointUrl = null;
+                    job.UpdatedAt = DateTime.UtcNow;
+                    await dbContext.SaveChangesAsync(cancellationToken);
 
-                await UpdateStatusAsync(workItem.JobId, FacebookReelUploadJobStatus.Publishing, cancellationToken);
+                    uploadVideoPath = storageResult.AbsolutePath;
+                    _logger.LogInformation("Reel upload job {JobId} stored locally at {VideoPath}. Starting direct binary upload to Facebook.", job.Id, uploadVideoPath);
+
+                    await UpdateStatusAsync(workItem.JobId, FacebookReelUploadJobStatus.Publishing, cancellationToken);
+                }
 
                 var publishResult = await publisher.PublishAsync(
                     job.PageId,
                     page.AccessToken,
-                    storageResult.AbsolutePath,
+                    uploadVideoPath,
                     job.Caption,
                     job.GraphApiVersion,
                     cancellationToken);

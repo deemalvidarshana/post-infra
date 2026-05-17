@@ -39,6 +39,9 @@ namespace Smapi.API.Models.DTOs
 
         [MaxLength(32)]
         public string GraphApiVersion { get; set; } = "v24.0";
+
+        [MaxLength(32)]
+        public string Platform { get; set; } = "Facebook";
     }
 
     public class CreateFacebookReelUploadBatchRequest
@@ -58,6 +61,9 @@ namespace Smapi.API.Models.DTOs
 
         [MaxLength(32)]
         public string GraphApiVersion { get; set; } = "v24.0";
+
+        [MaxLength(32)]
+        public string Platform { get; set; } = "Facebook";
     }
 
     public class FacebookReelUploadBatchResponse

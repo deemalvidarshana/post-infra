@@ -257,6 +257,13 @@ export default function FacebookAccountsPage() {
                 <span className="material-symbols-outlined text-sm">travel_explore</span>
                 Reels Scraper
               </Link>
+              <Link
+                href={`/accounts/facebook/${encodeURIComponent(page.pageId)}/rednote`}
+                className="w-full py-2.5 rounded bg-rose-600 text-xs font-bold text-white hover:bg-rose-500 transition-colors border border-rose-400/20 flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-sm">download</span>
+                RedNote Downloader
+              </Link>
               <div className="flex gap-3">
                 <Link
                   href={`/accounts/facebook/${encodeURIComponent(page.pageId)}/queue`}

@@ -26,8 +26,8 @@ namespace Smapi.API.Data
 
             modelBuilder.Entity<FacebookPostUrl>(entity =>
             {
-                entity.HasIndex(e => new { e.UserId, e.PageId, e.PermalinkUrl }).IsUnique();
-                entity.HasIndex(e => new { e.UserId, e.PageId });
+                entity.HasIndex(e => new { e.UserId, e.PageId, e.Platform, e.PermalinkUrl }).IsUnique();
+                entity.HasIndex(e => new { e.UserId, e.PageId, e.Platform });
                 entity.HasIndex(e => e.PostId);
             });
 

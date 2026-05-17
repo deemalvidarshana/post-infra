@@ -11,6 +11,10 @@ builder.Services.AddHttpClient<IApifyFacebookPostsClient, ApifyFacebookPostsClie
 {
     client.Timeout = TimeSpan.FromMinutes(5);
 });
+builder.Services.AddHttpClient<IApifyTikTokPostsClient, ApifyFacebookPostsClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
 builder.Services.AddHttpClient<IFacebookReelsPublisher, FacebookReelsPublisher>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10);

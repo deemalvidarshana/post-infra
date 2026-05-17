@@ -16,10 +16,14 @@ interface FacebookPageApi {
 
 interface ScrapedPost {
   id: number;
+  platform?: string;
   permalinkUrl: string;
   videoUrl?: string;
   postCreatedAt?: string;
   caption?: string;
+  s3UploadStatus?: string;
+  s3Key?: string;
+  s3UploadedAt?: string;
   scrapedAt: string;
 }
 
@@ -46,6 +50,8 @@ interface UploadJob {
   retainUntil?: string;
 }
 
+type SourcePlatform = "Facebook" | "TikTok" | "RedNote";
+
 export default function QueuePage() {
   const params = useParams<{ pageId: string }>();
   const router = useRouter();
@@ -54,6 +60,7 @@ export default function QueuePage() {
   const [pages, setPages] = useState<FacebookPageApi[]>([]);
   const [posts, setPosts] = useState<ScrapedPost[]>([]);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const [sourcePlatform, setSourcePlatform] = useState<SourcePlatform>("Facebook");
   const [pageForm, setPageForm] = useState({ pageId: routePageId, accessToken: "" });
   const [scheduleForm, setScheduleForm] = useState({ dailyPostCount: "6", startAt: getDefaultStartAt() });
   const [message, setMessage] = useState("");
@@ -64,6 +71,7 @@ export default function QueuePage() {
     graphApiVersion: ""
   });
   const hasLoadedStoredUser = useRef(false);
+  const previousSourcePlatform = useRef<SourcePlatform>("Facebook");
   const selectedPage = useMemo(
     () => pages.find((page) => page.pageId === routePageId) ?? null,
     [pages, routePageId]
@@ -131,8 +139,8 @@ export default function QueuePage() {
       }
 
       const [postsResponse, jobsResponse] = await Promise.all([
-        fetch(`/api/smapi/Pages/facebook/posts/${encodeURIComponent(effectiveUserId)}?pageId=${encodeURIComponent(effectivePageId)}`),
-        fetch(`/api/smapi/FacebookReelUploads/${encodeURIComponent(effectiveUserId)}?pageId=${encodeURIComponent(effectivePageId)}`)
+        fetch(`/api/smapi/Pages/facebook/posts/${encodeURIComponent(effectiveUserId)}?pageId=${encodeURIComponent(effectivePageId)}&platform=${encodeURIComponent(sourcePlatform)}&downloadedOnly=true`),
+        fetch(`/api/smapi/FacebookReelUploads/${encodeURIComponent(effectiveUserId)}?pageId=${encodeURIComponent(effectivePageId)}&platform=${encodeURIComponent(sourcePlatform)}`)
       ]);
       const [postsData, jobsData] = await Promise.all([postsResponse.json(), jobsResponse.json()]);
 
@@ -141,18 +149,18 @@ export default function QueuePage() {
         pageId: currentPage?.pageId || routePageId,
         accessToken: currentPage?.accessToken || ""
       });
-      setPosts(Array.isArray(postsData) ? postsData : []);
+      setPosts(Array.isArray(postsData) ? (postsData as ScrapedPost[]).filter((post) => isDownloadedPlatformVideo(post, sourcePlatform)) : []);
       setJobs(Array.isArray(jobsData) ? jobsData : []);
     } catch {
       setMessage("Could not load queue data from the backend.");
     } finally {
       setIsLoading(false);
     }
-  }, [routePageId, router, userId]);
+  }, [routePageId, router, sourcePlatform, userId]);
 
   const loadJobs = useCallback(async (nextUserId = userId) => {
     try {
-      const response = await fetch(`/api/smapi/FacebookReelUploads/${encodeURIComponent(nextUserId.trim())}?pageId=${encodeURIComponent(routePageId)}`);
+      const response = await fetch(`/api/smapi/FacebookReelUploads/${encodeURIComponent(nextUserId.trim())}?pageId=${encodeURIComponent(routePageId)}&platform=${encodeURIComponent(sourcePlatform)}`);
       const data = await response.json();
       if (Array.isArray(data)) {
         setJobs(data);
@@ -160,7 +168,7 @@ export default function QueuePage() {
     } catch {
       // Polling failures are ignored so the active form stays usable.
     }
-  }, [routePageId, userId]);
+  }, [routePageId, sourcePlatform, userId]);
 
   useEffect(() => {
     if (!userId) {
@@ -182,6 +190,19 @@ export default function QueuePage() {
     hasLoadedStoredUser.current = true;
     void loadData(userId);
   }, [loadData, userId]);
+
+  useEffect(() => {
+    if (!hasLoadedStoredUser.current || !userId.trim()) {
+      return;
+    }
+
+    if (previousSourcePlatform.current === sourcePlatform) {
+      return;
+    }
+
+    previousSourcePlatform.current = sourcePlatform;
+    void loadData(userId);
+  }, [loadData, sourcePlatform, userId]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -205,7 +226,7 @@ export default function QueuePage() {
     }
 
     if (queueablePosts.length === 0) {
-      setMessage("No new scraped reels are available to queue.");
+      setMessage(`No locally downloaded ${sourcePlatform} videos are available to queue. Download videos from the scraper page first.`);
       return;
     }
 
@@ -218,6 +239,7 @@ export default function QueuePage() {
         body: JSON.stringify({
           userId: userId.trim(),
           pageId: routePageId,
+          platform: sourcePlatform,
           dailyPostCount,
           startAt: startAt.toISOString(),
           graphApiVersion: publishForm.graphApiVersion.trim() || null
@@ -234,12 +256,12 @@ export default function QueuePage() {
       }
 
       if (!response.ok || !data?.success) {
-        setMessage(data?.message || `Upload job request failed with status ${response.status}.`);
+        setMessage(data?.message || responseText || `Upload job request failed with status ${response.status}.`);
         return;
       }
 
       setJobs((previousJobs) => [...(data.jobs || []), ...previousJobs]);
-      setMessage(data.message || `Queued ${data.queuedCount ?? 0} reel(s).`);
+      setMessage(data.message || `Queued ${data.queuedCount ?? 0} ${sourcePlatform} video(s).`);
       await loadJobs(userId);
     } catch {
       setMessage("Could not connect to the backend server.");
@@ -337,10 +359,21 @@ export default function QueuePage() {
             <span className="material-symbols-outlined text-sm">arrow_back</span>
             Facebook Pages
           </Link>
-          <h1 className="text-3xl font-bold text-white tracking-tight">{selectedPage?.pageName || "Facebook Page"} Reel Upload Queue</h1>
+          <h1 className="text-3xl font-bold text-white tracking-tight">{selectedPage?.pageName || "Facebook Page"} Video Upload Queue</h1>
           <p className="text-neutral-500 text-sm mt-1">Page ID: {routePageId}</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2">
+          <label className="sr-only" htmlFor="queue-source-platform">Source Platform</label>
+          <select
+            id="queue-source-platform"
+            value={sourcePlatform}
+            onChange={(event) => setSourcePlatform(event.target.value as SourcePlatform)}
+            className="w-full sm:w-40 bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm font-semibold text-white focus:border-blue-500 focus:outline-none"
+          >
+            <option value="Facebook">Facebook</option>
+            <option value="TikTok">TikTok</option>
+            <option value="RedNote">RedNote</option>
+          </select>
           <input
             value={userId}
             onChange={(event) => setUserId(event.target.value)}
@@ -363,7 +396,7 @@ export default function QueuePage() {
         <section className="glass-panel p-6 rounded-xl border border-white/5 space-y-5">
           <div>
             <h2 className="text-xl font-bold text-white">Page Access</h2>
-            <p className="text-neutral-500 text-sm mt-1">Confirm the Facebook Page ID and Page access token used for publishing.</p>
+            <p className="text-neutral-500 text-sm mt-1">Confirm the Facebook Page ID, token, and source platform used for publishing.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -424,7 +457,7 @@ export default function QueuePage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
             <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3">
-              <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Scraped Reels</p>
+              <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Downloaded {sourcePlatform}</p>
               <p className="mt-1 text-2xl font-bold text-white">{posts.length}</p>
             </div>
             <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3">
@@ -441,7 +474,7 @@ export default function QueuePage() {
         <section className="glass-panel p-6 rounded-xl border border-white/5 space-y-5">
           <div>
             <h2 className="text-xl font-bold text-white">Daily Schedule</h2>
-            <p className="text-neutral-500 text-sm mt-1">Set how many reels should publish per day. The queue spaces them evenly across 24 hours.</p>
+            <p className="text-neutral-500 text-sm mt-1">Queue only downloaded {sourcePlatform} videos. The queue spaces Facebook publishing evenly across 24 hours.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -471,7 +504,7 @@ export default function QueuePage() {
           </div>
 
           <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-4 text-sm text-neutral-300">
-            Videos are saved in the local <a href="/settings" className="font-bold text-blue-300 hover:text-blue-200">download folder</a> under this Facebook Page name. Automatic publishing runs only when a public local-storage URL is configured.
+            This page uses the already downloaded video files from the scraper page and publishes them with their saved captions. It does not download videos again.
           </div>
 
           <button
@@ -487,7 +520,7 @@ export default function QueuePage() {
             ) : (
                 <>
                   <span className="material-symbols-outlined text-sm">publish</span>
-                Queue {queueablePosts.length} Reel{queueablePosts.length === 1 ? "" : "s"}
+                Queue {queueablePosts.length} Downloaded {sourcePlatform} Video{queueablePosts.length === 1 ? "" : "s"}
                 </>
             )}
           </button>
@@ -504,7 +537,7 @@ export default function QueuePage() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-xl font-bold text-white">Queued Videos</h2>
-            <p className="text-neutral-500 text-sm mt-1">Scheduled publish time, status, captions, and source details for this Facebook Page.</p>
+            <p className="text-neutral-500 text-sm mt-1">Scheduled publish time, status, captions, and local downloaded {sourcePlatform} source details for this Facebook Page.</p>
           </div>
           <span className="text-[10px] uppercase tracking-widest text-neutral-500">{visibleJobs.length} jobs</span>
         </div>
@@ -540,7 +573,7 @@ export default function QueuePage() {
               <span className="text-xs text-neutral-500">{formatDateTime(job.createdAt)}</span>
               <span className="text-xs text-neutral-500">{formatDateTime(job.completedAt)}</span>
               <div className="min-w-0">
-                <p className="line-clamp-2 text-sm text-neutral-300">{job.caption || "No caption"}</p>
+                <p className="line-clamp-2 text-sm text-neutral-300">{formatCaption(job.caption, sourcePlatform)}</p>
                 {job.status === "StoredLocally" && (
                   <p className="mt-1 text-[10px] text-amber-300 flex items-center gap-1">
                     <span className="material-symbols-outlined text-[12px]">info</span>
@@ -607,6 +640,21 @@ function formatInterval(hours: number) {
 
 function trimNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function isDownloadedPlatformVideo(post: ScrapedPost, sourcePlatform: SourcePlatform) {
+  const platform = (post.platform || "Facebook").toLowerCase();
+  return platform === sourcePlatform.toLowerCase()
+    && (post.s3UploadStatus === "Downloaded" || post.s3UploadStatus === "Uploaded")
+    && Boolean(post.s3Key);
+}
+
+function formatCaption(caption: string | undefined, sourcePlatform: SourcePlatform) {
+  if (caption) {
+    return caption;
+  }
+
+  return sourcePlatform === "RedNote" ? "" : "No caption";
 }
 
 function getDefaultStartAt() {

@@ -149,7 +149,7 @@ namespace Smapi.API.Services
             if (trimmedDetails.Contains("Failed to resolve", StringComparison.OrdinalIgnoreCase)
                 || trimmedDetails.Contains("getaddrinfo failed", StringComparison.OrdinalIgnoreCase))
             {
-                return $"yt-dlp could not resolve Facebook DNS after retries. Check internet/DNS/VPN on the backend machine, then retry. Raw error: {trimmedDetails}";
+                return $"yt-dlp could not resolve the video source DNS after retries. Check internet/DNS/VPN on the backend machine, then retry. Raw error: {trimmedDetails}";
             }
 
             return $"yt-dlp failed with exit code {exitCode}: {trimmedDetails}";

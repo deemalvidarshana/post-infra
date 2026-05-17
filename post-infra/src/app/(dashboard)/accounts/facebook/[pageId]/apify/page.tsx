@@ -16,6 +16,7 @@ interface FacebookPageApi {
 
 interface ScrapedPost {
   id: number;
+  platform?: 'Facebook' | 'TikTok' | string;
   permalinkUrl: string;
   postId?: string;
   pageId?: string;
@@ -23,6 +24,14 @@ interface ScrapedPost {
   videoUrl?: string;
   postCreatedAt?: string;
   caption?: string;
+  authorName?: string;
+  likeCount?: number;
+  shareCount?: number;
+  playCount?: number;
+  commentCount?: number;
+  durationSeconds?: number;
+  musicName?: string;
+  musicAuthor?: string;
   s3UploadStatus: string;
   s3Bucket?: string;
   s3Region?: string;
@@ -42,6 +51,8 @@ interface ScrapeResponse {
   message?: string;
 }
 
+type ScrapePlatform = 'facebook' | 'tiktok';
+
 export default function FacebookApifyPage() {
   const params = useParams<{ pageId: string }>();
   const router = useRouter();
@@ -59,6 +70,7 @@ export default function FacebookApifyPage() {
   const [openActionPostId, setOpenActionPostId] = useState<number | null>(null);
   const [scrapeMessage, setScrapeMessage] = useState('');
   const [scrapeForm, setScrapeForm] = useState({
+    platform: 'facebook' as ScrapePlatform,
     urls: '',
     newerThan: '',
     resultsLimit: ''
@@ -76,6 +88,8 @@ export default function FacebookApifyPage() {
   );
   const uploadingPostIdSet = useMemo(() => new Set(uploadingPostIds), [uploadingPostIds]);
   const stoppingPostIdSet = useMemo(() => new Set(stoppingPostIds), [stoppingPostIds]);
+  const selectedPlatformLabel = platformLabel(scrapeForm.platform);
+  const firstScrapeUrl = scrapeForm.urls.split(/\r?\n/).map((url) => url.trim()).find(Boolean) || '#';
 
   const fetchPageData = useCallback(async (nextUserId = userId) => {
     if (!nextUserId.trim()) {
@@ -158,14 +172,13 @@ export default function FacebookApifyPage() {
     setIsScraping(true);
     setScrapeMessage('');
 
-    const startUrls = scrapeForm.urls
+    const inputUrls = scrapeForm.urls
       .split(/\r?\n/)
       .map((url) => url.trim())
-      .filter(Boolean)
-      .map((url) => ({ url }));
+      .filter(Boolean);
 
-    if (startUrls.length === 0) {
-      setScrapeMessage('Please enter at least one Facebook page URL.');
+    if (inputUrls.length === 0) {
+      setScrapeMessage(`Please enter at least one ${platformLabel(scrapeForm.platform)} URL.`);
       setIsScraping(false);
       return;
     }
@@ -185,18 +198,29 @@ export default function FacebookApifyPage() {
     window.localStorage.setItem('smapi_user_id', userId.trim());
 
     try {
-      const response = await fetch('/api/smapi/Pages/facebook/scrape', {
+      const response = await fetch(scrapeForm.platform === 'facebook'
+        ? '/api/smapi/Pages/facebook/scrape'
+        : '/api/smapi/Pages/tiktok/scrape', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          onlyPostsNewerThan: scrapeForm.newerThan || null,
-          resultsLimit: Number(scrapeForm.resultsLimit),
-          startUrls,
-          userId: userId.trim(),
-          pageId,
-        }),
+        body: JSON.stringify(scrapeForm.platform === 'facebook'
+          ? {
+              onlyPostsNewerThan: scrapeForm.newerThan || null,
+              resultsLimit: Number(scrapeForm.resultsLimit),
+              startUrls: inputUrls.map((url) => ({ url })),
+              userId: userId.trim(),
+              pageId,
+            }
+          : {
+              newestPostDate: todayDateInputValue(),
+              oldestPostDateUnified: scrapeForm.newerThan || null,
+              resultsPerPage: Number(scrapeForm.resultsLimit),
+              profiles: inputUrls,
+              userId: userId.trim(),
+              pageId,
+            }),
       });
 
       const responseText = await response.text();
@@ -213,15 +237,16 @@ export default function FacebookApifyPage() {
         return;
       }
 
-      setScrapeMessage(`Scraped ${data.scrapedCount} reels. Saved ${data.savedCount}, updated ${data.updatedCount}, skipped ${data.skippedCount}.`);
+      setScrapeMessage(`Scraped ${data.scrapedCount} ${scrapeForm.platform === 'tiktok' ? 'TikTok posts' : 'reels'}. Saved ${data.savedCount}, updated ${data.updatedCount}, skipped ${data.skippedCount}.`);
       setScrapedPosts((previousPosts) => {
         const merged = [...data.posts, ...previousPosts];
         const seen = new Set<string>();
         return merged.filter((post) => {
-          if (seen.has(post.permalinkUrl)) {
+          const postKey = `${platformValue(post)}:${post.permalinkUrl}`;
+          if (seen.has(postKey)) {
             return false;
           }
-          seen.add(post.permalinkUrl);
+          seen.add(postKey);
           return true;
         });
       });
@@ -523,26 +548,39 @@ export default function FacebookApifyPage() {
       <section className="glass-panel p-6 rounded-xl border border-white/5">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-xl font-bold text-white">Facebook Reels Scraper</h2>
-            <p className="text-neutral-500 text-sm">Scrape public reels and save reel URLs from the selected Facebook pages.</p>
+            <h2 className="text-xl font-bold text-white">{selectedPlatformLabel} Scraper</h2>
+            <p className="text-neutral-500 text-sm">Scrape public Facebook reels or TikTok profile posts and save them into the same log table.</p>
           </div>
-          <a
-            href={scrapeForm.urls.split(/\r?\n/)[0]}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/5 bg-white/5 px-4 py-2 text-xs font-bold text-white hover:bg-white/10 transition-colors"
-          >
-            <span className="material-symbols-outlined text-sm">open_in_new</span>
-            Open Page
-          </a>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <label className="sr-only" htmlFor="scrape-platform">Scrape platform</label>
+            <select
+              id="scrape-platform"
+              value={scrapeForm.platform}
+              onChange={(e) => setScrapeForm({ ...scrapeForm, platform: e.target.value as ScrapePlatform })}
+              className="h-11 rounded-lg border border-white/10 bg-black/50 px-3 text-sm font-semibold text-white focus:border-blue-500 focus:outline-none"
+            >
+              <option value="facebook">Facebook</option>
+              <option value="tiktok">TikTok</option>
+            </select>
+            <a
+              href={firstScrapeUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/5 bg-white/5 px-4 py-2 text-xs font-bold text-white hover:bg-white/10 transition-colors"
+            >
+              <span className="material-symbols-outlined text-sm">open_in_new</span>
+              Open Page
+            </a>
+          </div>
         </div>
 
         <form onSubmit={handleScrapePosts} className="mt-6 grid grid-cols-1 xl:grid-cols-[1.4fr_0.8fr] gap-6">
           <div className="space-y-2">
-            <label className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">Facebook Page URLs</label>
+            <label className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">{selectedPlatformLabel} URLs</label>
             <textarea
               required
               rows={7}
+              placeholder={scrapeForm.platform === 'tiktok' ? 'https://www.tiktok.com/@yamaha.sri.lanka' : 'https://www.facebook.com/page-or-reel'}
               className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all resize-none"
               value={scrapeForm.urls}
               onChange={(e) => setScrapeForm({ ...scrapeForm, urls: e.target.value })}
@@ -584,7 +622,7 @@ export default function FacebookApifyPage() {
               ) : (
                 <>
                   <span className="material-symbols-outlined text-sm">travel_explore</span>
-                  Scrape Reels
+                  {scrapeForm.platform === 'tiktok' ? 'Scrape TikTok' : 'Scrape Reels'}
                 </>
               )}
             </button>
@@ -602,7 +640,7 @@ export default function FacebookApifyPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-4">
           <div>
             <h2 className="text-xl font-bold text-white">View Logs</h2>
-            <p className="text-neutral-500 text-sm mt-1">Saved reel URLs from recent Apify scraper runs.</p>
+            <p className="text-neutral-500 text-sm mt-1">Saved Facebook and TikTok URLs from recent Apify scraper runs.</p>
           </div>
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <span className="text-[10px] uppercase tracking-widest text-neutral-500">{visibleLogPosts.length} stored / {uploadableLogPosts.length} ready / {stoppableLogPosts.length} running</span>
@@ -657,7 +695,7 @@ export default function FacebookApifyPage() {
         {visibleLogPosts.length > 0 ? (
           <div className="rounded-lg border border-white/5">
             <div className="hidden md:grid grid-cols-[minmax(240px,0.9fr)_minmax(320px,1.35fr)_180px_120px_44px] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
-              <span>Reel URL</span>
+              <span>Post URL</span>
               <span>Caption</span>
               <span>Local Download</span>
               <span>Date</span>
@@ -666,7 +704,12 @@ export default function FacebookApifyPage() {
             {visibleLogPosts.slice(0, 30).map((post) => (
               <div key={post.permalinkUrl} className="relative grid grid-cols-1 md:grid-cols-[minmax(240px,0.9fr)_minmax(320px,1.35fr)_180px_120px_44px] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
                 <div className="min-w-0 flex items-center gap-3">
-                  <span className="material-symbols-outlined text-blue-400 text-sm">link</span>
+                  <span className={`material-symbols-outlined text-sm ${isTikTokPost(post) ? 'text-pink-300' : 'text-blue-400'}`}>
+                    {isTikTokPost(post) ? 'music_note' : 'link'}
+                  </span>
+                  <span className={`hidden shrink-0 rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest sm:inline-flex ${platformBadgeClass(post)}`}>
+                    {platformDisplay(post)}
+                  </span>
                   <a
                     href={post.permalinkUrl}
                     target="_blank"
@@ -679,6 +722,21 @@ export default function FacebookApifyPage() {
                 <div className="min-w-0 text-xs text-neutral-400">
                   <span className="md:hidden mr-2 text-[10px] uppercase tracking-widest text-neutral-600">Caption</span>
                   <span className="line-clamp-2">{post.caption || '-'}</span>
+                  {isTikTokPost(post) && (
+                    <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-widest text-neutral-500">
+                      {post.authorName && <span>{authorDisplay(post.authorName)}</span>}
+                      {metricLabel('plays', post.playCount)}
+                      {metricLabel('likes', post.likeCount)}
+                      {metricLabel('shares', post.shareCount)}
+                      {metricLabel('comments', post.commentCount)}
+                      {post.durationSeconds ? <span>{post.durationSeconds}s</span> : null}
+                    </div>
+                  )}
+                  {isTikTokPost(post) && (post.musicName || post.musicAuthor) && (
+                    <div className="mt-1 line-clamp-1 text-[10px] text-neutral-600">
+                      {[post.musicName, post.musicAuthor].filter(Boolean).join(' - ')}
+                    </div>
+                  )}
                 </div>
                 <div className="min-w-0 text-xs text-neutral-400">
                   <span className="md:hidden mr-2 text-[10px] uppercase tracking-widest text-neutral-600">Local Download</span>
@@ -800,7 +858,7 @@ export default function FacebookApifyPage() {
           </div>
         ) : (
           <div className="rounded-lg border border-white/5 bg-black/20 px-4 py-10 text-center text-sm text-neutral-500">
-            No scraped reel URLs yet.
+            No scraped URLs yet.
           </div>
         )}
       </section>
@@ -814,6 +872,52 @@ function safeDecode(value: string) {
   } catch {
     return value;
   }
+}
+
+function platformLabel(platform: ScrapePlatform) {
+  return platform === 'tiktok' ? 'TikTok' : 'Facebook';
+}
+
+function platformValue(post: ScrapedPost) {
+  return (post.platform || 'Facebook').toLowerCase() === 'tiktok' ? 'tiktok' : 'facebook';
+}
+
+function platformDisplay(post: ScrapedPost) {
+  return platformValue(post) === 'tiktok' ? 'TikTok' : 'Facebook';
+}
+
+function isTikTokPost(post: ScrapedPost) {
+  return platformValue(post) === 'tiktok';
+}
+
+function platformBadgeClass(post: ScrapedPost) {
+  return isTikTokPost(post)
+    ? 'border border-pink-400/20 bg-pink-500/10 text-pink-200'
+    : 'border border-blue-400/20 bg-blue-500/10 text-blue-200';
+}
+
+function metricLabel(label: string, value?: number) {
+  if (typeof value !== 'number') {
+    return null;
+  }
+
+  return <span>{compactNumber(value)} {label}</span>;
+}
+
+function compactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function authorDisplay(authorName: string) {
+  const trimmed = authorName.trim();
+  return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
+}
+
+function todayDateInputValue() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function getStoredUserId() {

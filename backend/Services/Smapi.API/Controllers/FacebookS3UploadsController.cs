@@ -68,6 +68,12 @@ namespace Smapi.API.Controllers
             var skippedCount = 0;
             foreach (var post in posts)
             {
+                if (post.S3UploadStatus is (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                    && !HasExistingLocalDownload(post))
+                {
+                    MarkLocalDownloadMissing(post);
+                }
+
                 if (post.S3UploadStatus is FacebookPostS3UploadStatus.Queued
                     or FacebookPostS3UploadStatus.Downloading
                     or FacebookPostS3UploadStatus.Downloaded
@@ -213,6 +219,34 @@ namespace Smapi.API.Controllers
             }
 
             return PhysicalFile(localPath, "video/mp4", enableRangeProcessing: true);
+        }
+
+        private bool HasExistingLocalDownload(Models.FacebookPostUrl post)
+        {
+            if (post.S3UploadStatus is not (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                || string.IsNullOrWhiteSpace(post.S3Key))
+            {
+                return false;
+            }
+
+            try
+            {
+                return System.IO.File.Exists(_storage.GetAbsolutePath(post.S3Key));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void MarkLocalDownloadMissing(Models.FacebookPostUrl post)
+        {
+            post.S3UploadStatus = FacebookPostS3UploadStatus.NotUploaded;
+            post.S3Bucket = null;
+            post.S3Region = null;
+            post.S3Key = null;
+            post.S3UploadedAt = null;
+            post.S3UploadError = "Local video file is missing. Download it again.";
         }
     }
 }

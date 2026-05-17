@@ -13,18 +13,24 @@ namespace Smapi.API.Controllers
     {
         private readonly SmapiDbContext _context;
         private readonly IApifyFacebookPostsClient _apifyFacebookPostsClient;
+        private readonly IApifyTikTokPostsClient _apifyTikTokPostsClient;
         private readonly ILocalVideoStorageService _storage;
+        private readonly IFacebookPostS3UploadQueue _downloadQueue;
         private readonly ILogger<PagesController> _logger;
 
         public PagesController(
             SmapiDbContext context,
             IApifyFacebookPostsClient apifyFacebookPostsClient,
+            IApifyTikTokPostsClient apifyTikTokPostsClient,
             ILocalVideoStorageService storage,
+            IFacebookPostS3UploadQueue downloadQueue,
             ILogger<PagesController> logger)
         {
             _context = context;
             _apifyFacebookPostsClient = apifyFacebookPostsClient;
+            _apifyTikTokPostsClient = apifyTikTokPostsClient;
             _storage = storage;
+            _downloadQueue = downloadQueue;
             _logger = logger;
         }
 
@@ -57,10 +63,14 @@ namespace Smapi.API.Controllers
         [HttpGet("facebook/posts/{userId}")]
         public async Task<ActionResult<IEnumerable<FacebookPostUrlResponse>>> GetFacebookPostUrls(
             string userId,
-            [FromQuery] string? pageId)
+            [FromQuery] string? pageId,
+            [FromQuery] string? platform,
+            [FromQuery] bool downloadedOnly = false,
+            CancellationToken cancellationToken = default)
         {
             userId = userId.Trim();
             pageId = string.IsNullOrWhiteSpace(pageId) ? null : pageId.Trim();
+            var normalizedPlatform = NormalizeSourcePlatform(platform);
 
             var query = _context.FacebookPostUrls
                 .Where(post => post.UserId == userId);
@@ -70,28 +80,53 @@ namespace Smapi.API.Controllers
                 query = query.Where(post => post.PageId == pageId);
             }
 
-            return await query
+            if (!string.IsNullOrWhiteSpace(normalizedPlatform))
+            {
+                query = query.Where(post => post.Platform == normalizedPlatform);
+            }
+            else
+            {
+                query = query.Where(post => post.Platform != SocialPostPlatform.RedNote);
+            }
+
+            if (downloadedOnly)
+            {
+                query = query.Where(post => (post.S3UploadStatus == FacebookPostS3UploadStatus.Downloaded
+                        || post.S3UploadStatus == FacebookPostS3UploadStatus.Uploaded)
+                    && post.S3Key != null
+                    && post.S3Key != "");
+            }
+
+            var posts = await query
                 .OrderByDescending(post => post.ScrapedAt)
                 .Take(200)
-                .Select(post => new FacebookPostUrlResponse
+                .ToListAsync(cancellationToken);
+
+            if (downloadedOnly)
+            {
+                var changed = false;
+                var availablePosts = new List<FacebookPostUrl>();
+                foreach (var post in posts)
                 {
-                    Id = post.Id,
-                    PermalinkUrl = post.PermalinkUrl,
-                    PostId = post.PostId,
-                    PageId = post.PageId,
-                    SourcePageUrl = post.SourcePageUrl,
-                    VideoUrl = post.VideoUrl,
-                    PostCreatedAt = post.PostCreatedAt,
-                    Caption = post.Caption,
-                    S3UploadStatus = post.S3UploadStatus,
-                    S3Bucket = post.S3Bucket,
-                    S3Region = post.S3Region,
-                    S3Key = post.S3Key,
-                    S3UploadedAt = post.S3UploadedAt,
-                    S3UploadError = post.S3UploadError,
-                    ScrapedAt = post.ScrapedAt
-                })
-                .ToListAsync();
+                    if (HasExistingLocalDownload(post))
+                    {
+                        availablePosts.Add(post);
+                        continue;
+                    }
+
+                    MarkLocalDownloadMissing(post);
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+
+                posts = availablePosts;
+            }
+
+            return Ok(posts.Select(ToResponse).ToList());
         }
 
         [HttpPost("facebook/scrape")]
@@ -148,7 +183,9 @@ namespace Smapi.API.Controllers
 
             var urls = scrapedPosts.Select(post => post.Url!).ToList();
             var existingPostsQuery = _context.FacebookPostUrls
-                .Where(post => post.UserId == request.UserId && urls.Contains(post.PermalinkUrl));
+                .Where(post => post.UserId == request.UserId
+                    && post.Platform == SocialPostPlatform.Facebook
+                    && urls.Contains(post.PermalinkUrl));
 
             if (!string.IsNullOrWhiteSpace(request.PageId))
             {
@@ -176,6 +213,7 @@ namespace Smapi.API.Controllers
                 {
                     _logger.LogInformation("Scrape: Found existing post {PostId}. Current status: {Status}", existingPost.Id, existingPost.S3UploadStatus);
                     
+                    existingPost.Platform = SocialPostPlatform.Facebook;
                     existingPost.PostId = FirstNonEmpty(item.GetItemId(), existingPost.PostId);
                     existingPost.PageId = FirstNonEmpty(existingPost.PageId, request.PageId);
                     existingPost.SourcePageUrl = FirstNonEmpty(NormalizeUrl(item.GetSourcePageUrl()), existingPost.SourcePageUrl);
@@ -208,6 +246,7 @@ namespace Smapi.API.Controllers
 
                 var newPost = new FacebookPostUrl
                 {
+                    Platform = SocialPostPlatform.Facebook,
                     PermalinkUrl = permalinkUrl,
                     PostId = item.GetItemId(),
                     PageId = request.PageId,
@@ -234,6 +273,328 @@ namespace Smapi.API.Controllers
                 SavedCount = savedCount,
                 UpdatedCount = updatedCount,
                 SkippedCount = scrapedItems.Count - scrapedPosts.Count,
+                Posts = changedPosts
+                    .OrderByDescending(post => post.ScrapedAt)
+                    .Select(ToResponse)
+                    .ToList()
+            });
+        }
+
+        [HttpPost("tiktok/scrape")]
+        public async Task<ActionResult<FacebookScrapeResponse>> ScrapeTikTokPosts(
+            [FromBody] TikTokScrapeRequest request,
+            CancellationToken cancellationToken)
+        {
+            var validProfiles = request.Profiles
+                .Select(NormalizeTikTokProfileInput)
+                .Where(profile => !string.IsNullOrWhiteSpace(profile))
+                .Select(profile => profile!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (validProfiles.Count == 0)
+            {
+                return BadRequest(new { success = false, message = "At least one valid TikTok profile URL is required." });
+            }
+
+            request.Profiles = validProfiles;
+            request.ResultsPerPage = Math.Clamp(request.ResultsPerPage, 1, 1000);
+            request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
+            request.PageId = string.IsNullOrWhiteSpace(request.PageId)
+                ? ExtractTikTokHandle(validProfiles[0]) ?? "tiktok"
+                : request.PageId.Trim();
+
+            IReadOnlyList<ApifyTikTokPostItem> scrapedItems;
+            try
+            {
+                scrapedItems = await _apifyTikTokPostsClient.ScrapePostsAsync(request, cancellationToken);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "TikTok scrape failed.");
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    success = false,
+                    message = $"TikTok scrape failed: {TrimForClient(ex.Message)}"
+                });
+            }
+
+            var scrapedPosts = scrapedItems
+                .Select(item => new
+                {
+                    Item = item,
+                    Url = NormalizeUrl(item.GetPermalinkUrl())
+                })
+                .Where(post => !string.IsNullOrWhiteSpace(post.Url))
+                .GroupBy(post => post.Url!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+
+            var urls = scrapedPosts.Select(post => post.Url!).ToList();
+            var existingPostsQuery = _context.FacebookPostUrls
+                .Where(post => post.UserId == request.UserId
+                    && post.Platform == SocialPostPlatform.TikTok
+                    && urls.Contains(post.PermalinkUrl));
+
+            if (!string.IsNullOrWhiteSpace(request.PageId))
+            {
+                existingPostsQuery = existingPostsQuery
+                    .Where(post => post.PageId == request.PageId || post.PageId == null);
+            }
+
+            var existingPosts = (await existingPostsQuery
+                    .OrderByDescending(post => post.PageId == request.PageId)
+                    .ToListAsync(cancellationToken))
+                .GroupBy(post => post.PermalinkUrl, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+            var savedCount = 0;
+            var updatedCount = 0;
+            var changedPosts = new List<FacebookPostUrl>();
+
+            foreach (var scrapedPost in scrapedPosts)
+            {
+                var item = scrapedPost.Item;
+                var permalinkUrl = scrapedPost.Url!;
+
+                if (existingPosts.TryGetValue(permalinkUrl, out var existingPost))
+                {
+                    existingPost.Platform = SocialPostPlatform.TikTok;
+                    existingPost.PostId = FirstNonEmpty(item.GetItemId(), existingPost.PostId);
+                    existingPost.PageId = FirstNonEmpty(existingPost.PageId, request.PageId);
+                    existingPost.SourcePageUrl = FirstNonEmpty(NormalizeUrl(item.GetProfileUrl()), existingPost.SourcePageUrl);
+                    existingPost.VideoUrl = FirstNonEmpty(item.GetVideoUrl(), existingPost.VideoUrl);
+                    existingPost.PostCreatedAt = item.GetCreatedAt() ?? existingPost.PostCreatedAt;
+                    existingPost.Caption = FirstNonEmpty(item.GetCaption(), existingPost.Caption);
+                    existingPost.AuthorName = FirstNonEmpty(item.GetAuthorName(), existingPost.AuthorName);
+                    existingPost.LikeCount = item.GetLikeCount() ?? existingPost.LikeCount;
+                    existingPost.ShareCount = item.GetShareCount() ?? existingPost.ShareCount;
+                    existingPost.PlayCount = item.GetPlayCount() ?? existingPost.PlayCount;
+                    existingPost.CommentCount = item.GetCommentCount() ?? existingPost.CommentCount;
+                    existingPost.DurationSeconds = item.GetDurationSeconds() ?? existingPost.DurationSeconds;
+                    existingPost.MusicName = FirstNonEmpty(item.GetMusicName(), existingPost.MusicName);
+                    existingPost.MusicAuthor = FirstNonEmpty(item.GetMusicAuthor(), existingPost.MusicAuthor);
+                    existingPost.ScrapedAt = DateTime.UtcNow;
+
+                    if (existingPost.S3UploadStatus == "Downloaded" && !string.IsNullOrEmpty(existingPost.S3Key))
+                    {
+                        try
+                        {
+                            var path = _storage.GetAbsolutePath(existingPost.S3Key);
+                            if (!System.IO.File.Exists(path))
+                            {
+                                _logger.LogInformation("TikTok scrape: File missing for post {PostId} at {Path}. Resetting status to NotUploaded.", existingPost.Id, path);
+                                existingPost.S3UploadStatus = "NotUploaded";
+                                existingPost.S3Key = null;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    updatedCount++;
+                    changedPosts.Add(existingPost);
+                    continue;
+                }
+
+                var newPost = new FacebookPostUrl
+                {
+                    Platform = SocialPostPlatform.TikTok,
+                    PermalinkUrl = permalinkUrl,
+                    PostId = item.GetItemId(),
+                    PageId = request.PageId,
+                    SourcePageUrl = NormalizeUrl(item.GetProfileUrl()),
+                    VideoUrl = item.GetVideoUrl(),
+                    PostCreatedAt = item.GetCreatedAt(),
+                    Caption = item.GetCaption(),
+                    AuthorName = item.GetAuthorName(),
+                    LikeCount = item.GetLikeCount(),
+                    ShareCount = item.GetShareCount(),
+                    PlayCount = item.GetPlayCount(),
+                    CommentCount = item.GetCommentCount(),
+                    DurationSeconds = item.GetDurationSeconds(),
+                    MusicName = item.GetMusicName(),
+                    MusicAuthor = item.GetMusicAuthor(),
+                    ScrapedAt = DateTime.UtcNow,
+                    UserId = request.UserId
+                };
+
+                _context.FacebookPostUrls.Add(newPost);
+                existingPosts[permalinkUrl] = newPost;
+                savedCount++;
+                changedPosts.Add(newPost);
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new FacebookScrapeResponse
+            {
+                Success = true,
+                ScrapedCount = scrapedItems.Count,
+                SavedCount = savedCount,
+                UpdatedCount = updatedCount,
+                SkippedCount = scrapedItems.Count - scrapedPosts.Count,
+                Posts = changedPosts
+                    .OrderByDescending(post => post.ScrapedAt)
+                    .Select(ToResponse)
+                    .ToList()
+            });
+        }
+
+        [HttpGet("rednote/downloads/{userId}")]
+        public async Task<ActionResult<IEnumerable<FacebookPostUrlResponse>>> GetRedNoteDownloads(
+            string userId,
+            [FromQuery] string? pageId,
+            CancellationToken cancellationToken)
+        {
+            userId = userId.Trim();
+            pageId = string.IsNullOrWhiteSpace(pageId) ? "rednote" : pageId.Trim();
+
+            return await _context.FacebookPostUrls
+                .AsNoTracking()
+                .Where(post => post.UserId == userId
+                    && post.PageId == pageId
+                    && post.Platform == SocialPostPlatform.RedNote)
+                .OrderByDescending(post => post.ScrapedAt)
+                .Take(200)
+                .Select(post => new FacebookPostUrlResponse
+                {
+                    Id = post.Id,
+                    Platform = post.Platform,
+                    PermalinkUrl = post.PermalinkUrl,
+                    PostId = post.PostId,
+                    PageId = post.PageId,
+                    SourcePageUrl = post.SourcePageUrl,
+                    VideoUrl = post.VideoUrl,
+                    PostCreatedAt = post.PostCreatedAt,
+                    Caption = post.Caption,
+                    AuthorName = post.AuthorName,
+                    LikeCount = post.LikeCount,
+                    ShareCount = post.ShareCount,
+                    PlayCount = post.PlayCount,
+                    CommentCount = post.CommentCount,
+                    DurationSeconds = post.DurationSeconds,
+                    MusicName = post.MusicName,
+                    MusicAuthor = post.MusicAuthor,
+                    S3UploadStatus = post.S3UploadStatus,
+                    S3Bucket = post.S3Bucket,
+                    S3Region = post.S3Region,
+                    S3Key = post.S3Key,
+                    S3UploadedAt = post.S3UploadedAt,
+                    S3UploadError = post.S3UploadError,
+                    ScrapedAt = post.ScrapedAt
+                })
+                .ToListAsync(cancellationToken);
+        }
+
+        [HttpPost("rednote/downloads")]
+        public async Task<ActionResult<RedNoteDownloadResponse>> QueueRedNoteDownloads(
+            [FromBody] RedNoteDownloadRequest request,
+            CancellationToken cancellationToken)
+        {
+            request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
+            request.PageId = string.IsNullOrWhiteSpace(request.PageId) ? "rednote" : request.PageId.Trim();
+
+            var validUrls = request.Urls
+                .Select(NormalizeRedNoteUrl)
+                .Where(url => !string.IsNullOrWhiteSpace(url))
+                .Select(url => url!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (validUrls.Count == 0)
+            {
+                return BadRequest(new { success = false, message = "At least one valid RedNote/Xiaohongshu URL is required." });
+            }
+
+            var existingPosts = (await _context.FacebookPostUrls
+                    .Where(post => post.UserId == request.UserId
+                        && post.PageId == request.PageId
+                        && post.Platform == SocialPostPlatform.RedNote
+                        && validUrls.Contains(post.PermalinkUrl))
+                    .ToListAsync(cancellationToken))
+                .ToDictionary(post => post.PermalinkUrl, StringComparer.OrdinalIgnoreCase);
+
+            var savedCount = 0;
+            var updatedCount = 0;
+            var skippedCount = 0;
+            var queuedPosts = new List<FacebookPostUrl>();
+            var changedPosts = new List<FacebookPostUrl>();
+
+            foreach (var url in validUrls)
+            {
+                if (existingPosts.TryGetValue(url, out var existingPost))
+                {
+                    existingPost.ScrapedAt = DateTime.UtcNow;
+                    existingPost.S3UploadError = null;
+
+                    if (existingPost.S3UploadStatus is (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                        && !HasExistingLocalDownload(existingPost))
+                    {
+                        MarkLocalDownloadMissing(existingPost);
+                    }
+
+                    if (existingPost.S3UploadStatus is FacebookPostS3UploadStatus.Queued
+                        or FacebookPostS3UploadStatus.Downloading
+                        or FacebookPostS3UploadStatus.Downloaded
+                        or FacebookPostS3UploadStatus.Uploading
+                        or FacebookPostS3UploadStatus.Uploaded)
+                    {
+                        skippedCount++;
+                        changedPosts.Add(existingPost);
+                        continue;
+                    }
+
+                    existingPost.S3UploadStatus = FacebookPostS3UploadStatus.Queued;
+                    existingPost.S3UploadError = null;
+                    updatedCount++;
+                    queuedPosts.Add(existingPost);
+                    changedPosts.Add(existingPost);
+                    continue;
+                }
+
+                var newPost = new FacebookPostUrl
+                {
+                    Platform = SocialPostPlatform.RedNote,
+                    PermalinkUrl = url,
+                    PageId = request.PageId,
+                    SourcePageUrl = url,
+                    ScrapedAt = DateTime.UtcNow,
+                    UserId = request.UserId,
+                    S3UploadStatus = FacebookPostS3UploadStatus.Queued
+                };
+
+                _context.FacebookPostUrls.Add(newPost);
+                existingPosts[url] = newPost;
+                savedCount++;
+                queuedPosts.Add(newPost);
+                changedPosts.Add(newPost);
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            foreach (var post in queuedPosts)
+            {
+                await _downloadQueue.QueueAsync(
+                    new FacebookPostS3UploadWorkItem(post.Id, request.UserId, request.PageId),
+                    cancellationToken);
+            }
+
+            return Ok(new RedNoteDownloadResponse
+            {
+                Success = true,
+                SavedCount = savedCount,
+                UpdatedCount = updatedCount,
+                QueuedCount = queuedPosts.Count,
+                SkippedCount = skippedCount,
+                Message = queuedPosts.Count == 0
+                    ? "No new or failed RedNote videos were available to queue."
+                    : $"Queued {queuedPosts.Count} RedNote video(s) for local download.",
                 Posts = changedPosts
                     .OrderByDescending(post => post.ScrapedAt)
                     .Select(ToResponse)
@@ -383,7 +744,7 @@ namespace Smapi.API.Controllers
             pageId = pageId.Trim();
 
             var posts = await _context.FacebookPostUrls
-                .Where(p => p.UserId == userId && p.PageId == pageId)
+                .Where(p => p.UserId == userId && p.PageId == pageId && p.Platform != SocialPostPlatform.RedNote)
                 .ToListAsync();
 
             if (posts.Count == 0)
@@ -429,6 +790,7 @@ namespace Smapi.API.Controllers
             return new FacebookPostUrlResponse
             {
                 Id = post.Id,
+                Platform = post.Platform,
                 PermalinkUrl = post.PermalinkUrl,
                 PostId = post.PostId,
                 PageId = post.PageId,
@@ -436,6 +798,14 @@ namespace Smapi.API.Controllers
                 VideoUrl = post.VideoUrl,
                 PostCreatedAt = post.PostCreatedAt,
                 Caption = post.Caption,
+                AuthorName = post.AuthorName,
+                LikeCount = post.LikeCount,
+                ShareCount = post.ShareCount,
+                PlayCount = post.PlayCount,
+                CommentCount = post.CommentCount,
+                DurationSeconds = post.DurationSeconds,
+                MusicName = post.MusicName,
+                MusicAuthor = post.MusicAuthor,
                 S3UploadStatus = post.S3UploadStatus,
                 S3Bucket = post.S3Bucket,
                 S3Region = post.S3Region,
@@ -444,6 +814,113 @@ namespace Smapi.API.Controllers
                 S3UploadError = post.S3UploadError,
                 ScrapedAt = post.ScrapedAt
             };
+        }
+
+        private bool HasExistingLocalDownload(FacebookPostUrl post)
+        {
+            if (post.S3UploadStatus is not (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                || string.IsNullOrWhiteSpace(post.S3Key))
+            {
+                return false;
+            }
+
+            try
+            {
+                return System.IO.File.Exists(_storage.GetAbsolutePath(post.S3Key));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Invalid local storage key for post {PostId}.", post.Id);
+                return false;
+            }
+        }
+
+        private static void MarkLocalDownloadMissing(FacebookPostUrl post)
+        {
+            post.S3UploadStatus = FacebookPostS3UploadStatus.NotUploaded;
+            post.S3Bucket = null;
+            post.S3Region = null;
+            post.S3Key = null;
+            post.S3UploadedAt = null;
+            post.S3UploadError = "Local video file is missing. Download it again.";
+        }
+
+        private static string? NormalizeTikTokProfileInput(string? profile)
+        {
+            if (string.IsNullOrWhiteSpace(profile))
+            {
+                return null;
+            }
+
+            var value = profile.Trim();
+            if (value.StartsWith('@'))
+            {
+                value = $"https://www.tiktok.com/{value}";
+            }
+            else if (!value.Contains("://", StringComparison.Ordinal) && !value.Contains('/', StringComparison.Ordinal))
+            {
+                value = $"https://www.tiktok.com/@{value.TrimStart('@')}";
+            }
+            else if (!value.Contains("://", StringComparison.Ordinal))
+            {
+                value = $"https://{value.TrimStart('/')}";
+            }
+
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                || (!uri.Host.Equals("tiktok.com", StringComparison.OrdinalIgnoreCase)
+                    && !uri.Host.EndsWith(".tiktok.com", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            return NormalizeUrl(value);
+        }
+
+        private static string? ExtractTikTokHandle(string profileUrl)
+        {
+            if (!Uri.TryCreate(profileUrl, UriKind.Absolute, out var uri))
+            {
+                return null;
+            }
+
+            return uri.AbsolutePath
+                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault(segment => segment.StartsWith('@'))
+                ?.TrimStart('@');
+        }
+
+        private static string? NormalizeRedNoteUrl(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            var value = url.Trim();
+            if (!value.Contains("://", StringComparison.Ordinal))
+            {
+                value = $"https://{value.TrimStart('/')}";
+            }
+
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                || !IsRedNoteHost(uri.Host))
+            {
+                return null;
+            }
+
+            return NormalizeUrl(value);
+        }
+
+        private static bool IsRedNoteHost(string host)
+        {
+            return host.Equals("xhslink.com", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".xhslink.com", StringComparison.OrdinalIgnoreCase)
+                || host.Equals("xiaohongshu.com", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".xiaohongshu.com", StringComparison.OrdinalIgnoreCase)
+                || host.Equals("rednote.com", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".rednote.com", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string? NormalizeUrl(string? url)
@@ -470,6 +947,32 @@ namespace Smapi.API.Controllers
         private static string? FirstNonEmpty(params string?[] values)
         {
             return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        }
+
+        private static string? NormalizeSourcePlatform(string? platform)
+        {
+            platform = platform?.Trim();
+            if (string.IsNullOrWhiteSpace(platform))
+            {
+                return null;
+            }
+
+            if (platform.Equals(SocialPostPlatform.Facebook, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.Facebook;
+            }
+
+            if (platform.Equals(SocialPostPlatform.TikTok, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.TikTok;
+            }
+
+            if (platform.Equals(SocialPostPlatform.RedNote, StringComparison.OrdinalIgnoreCase))
+            {
+                return SocialPostPlatform.RedNote;
+            }
+
+            return null;
         }
 
         private static string TrimForClient(string value)

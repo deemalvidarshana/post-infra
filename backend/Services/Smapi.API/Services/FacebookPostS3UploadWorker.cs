@@ -1,4 +1,5 @@
 using Smapi.API.Data;
+using Smapi.API.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace Smapi.API.Services
@@ -46,7 +47,7 @@ namespace Smapi.API.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Unexpected local download worker error for Facebook post {PostId}.", workItem.PostId);
+                    _logger.LogError(ex, "Unexpected local download worker error for scraped post {PostId}.", workItem.PostId);
                     await MarkFailedAsync(workItem.PostId, ex.Message, CancellationToken.None);
                 }
             }
@@ -91,9 +92,17 @@ namespace Smapi.API.Services
 
                 var localVideoPath = await downloader.DownloadAsync(sourceUrl, tempDirectory, downloadToken);
                 var storageKey = storage.BuildStorageKey(
-                    FirstNonEmpty(page?.PageName, post.PageId, workItem.PageId) ?? "facebook-page",
+                    FirstNonEmpty(
+                        page?.PageName,
+                        post.PageId,
+                        workItem.PageId) ?? "social-page",
                     workItem.PageId,
-                    "scraped-reels",
+                    post.Platform switch
+                    {
+                        SocialPostPlatform.TikTok => "tiktok",
+                        SocialPostPlatform.RedNote => "rednote",
+                        _ => "fb"
+                    },
                     post.Id);
 
                 var storageResult = await storage.StoreAsync(
@@ -111,7 +120,7 @@ namespace Smapi.API.Services
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger.LogInformation("Local download stopped for Facebook post {PostId}.", workItem.PostId);
+                _logger.LogInformation("Local download stopped for scraped post {PostId}.", workItem.PostId);
                 await MarkCancelledAsync(workItem.PostId, CancellationToken.None);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -120,7 +129,7 @@ namespace Smapi.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Local download failed for Facebook post {PostId}.", workItem.PostId);
+                _logger.LogError(ex, "Local download failed for scraped post {PostId}.", workItem.PostId);
                 await MarkFailedAsync(workItem.PostId, ex.Message, cancellationToken);
             }
             finally
