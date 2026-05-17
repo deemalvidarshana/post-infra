@@ -34,6 +34,12 @@ interface RedNoteCaptionPromptResponse {
   updatedAt?: string;
 }
 
+interface RedNoteCaptionRetryResponse {
+  success?: boolean;
+  message?: string;
+  post?: RedNoteDownload;
+}
+
 export default function RedNoteDownloaderPage() {
   const params = useParams<{ pageId: string }>();
   const pageId = useMemo(() => safeDecode(params.pageId), [params.pageId]);
@@ -347,6 +353,58 @@ export default function RedNoteDownloaderPage() {
     }
   };
 
+  const handleRetryCaption = async (post: RedNoteDownload) => {
+    setMessage("");
+
+    if (!userId.trim()) {
+      setMessage("Please enter a User ID.");
+      return;
+    }
+
+    if (!isLocallyDownloaded(post.s3UploadStatus) || !post.s3Key) {
+      setMessage("Download the RedNote video before retrying the AI caption.");
+      return;
+    }
+
+    if (!captionPrompt.trim()) {
+      setMessage("Enter the caption prompt for this Facebook Page before retrying AI captions.");
+      return;
+    }
+
+    setBusyPostIds((currentIds) => Array.from(new Set([...currentIds, post.id])));
+
+    try {
+      const response = await fetch(`/api/smapi/Pages/rednote/downloads/${post.id}/caption/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          pageId,
+          captionPrompt: captionPrompt.trim()
+        })
+      });
+      const data = await response.json().catch(() => null) as RedNoteCaptionRetryResponse | null;
+      if (!response.ok || !data?.success || !data.post) {
+        if (data?.post) {
+          setDownloads((currentDownloads) => currentDownloads.map((item) => (
+            item.id === data.post?.id ? data.post : item
+          )));
+        }
+        setMessage(data?.message || `AI caption retry failed with status ${response.status}.`);
+        return;
+      }
+
+      setDownloads((currentDownloads) => currentDownloads.map((item) => (
+        item.id === data.post?.id ? data.post : item
+      )));
+      setMessage(data.message || "RedNote AI caption regenerated.");
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setBusyPostIds((currentIds) => currentIds.filter((postId) => postId !== post.id));
+    }
+  };
+
   const handleDeletePost = async (post: RedNoteDownload) => {
     setMessage("");
     setBusyPostIds((currentIds) => Array.from(new Set([...currentIds, post.id])));
@@ -542,6 +600,22 @@ export default function RedNoteDownloaderPage() {
               </div>
               <span className="text-xs text-neutral-500">{formatDateTime(post.scrapedAt)}</span>
               <div className="flex flex-wrap justify-start gap-2 md:justify-end">
+                {hasPendingCaption(post) && isLocallyDownloaded(post.s3UploadStatus) && (
+                  <button
+                    type="button"
+                    onClick={() => handleRetryCaption(post)}
+                    disabled={busyPostIdSet.has(post.id)}
+                    title="Retry AI caption"
+                    aria-label="Retry AI caption"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-amber-500/20 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 disabled:opacity-40"
+                  >
+                    {busyPostIdSet.has(post.id) ? (
+                      <span className="h-4 w-4 rounded-full border-2 border-amber-200/30 border-t-amber-100 animate-spin" />
+                    ) : (
+                      <span className="material-symbols-outlined text-[16px]">refresh</span>
+                    )}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleViewVideo(post)}
@@ -623,6 +697,10 @@ function canQueueLocalDownload(status?: string) {
 
 function isLocallyDownloaded(status?: string) {
   return status === "Downloaded" || status === "Uploaded";
+}
+
+function hasPendingCaption(post: RedNoteDownload) {
+  return !post.caption?.trim();
 }
 
 function statusClass(status?: string) {

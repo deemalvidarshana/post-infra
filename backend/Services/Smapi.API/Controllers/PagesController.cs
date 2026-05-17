@@ -16,6 +16,7 @@ namespace Smapi.API.Controllers
         private readonly IApifyTikTokPostsClient _apifyTikTokPostsClient;
         private readonly ILocalVideoStorageService _storage;
         private readonly IFacebookPostS3UploadQueue _downloadQueue;
+        private readonly IGeminiCaptionGenerator _captionGenerator;
         private readonly ILogger<PagesController> _logger;
 
         public PagesController(
@@ -24,6 +25,7 @@ namespace Smapi.API.Controllers
             IApifyTikTokPostsClient apifyTikTokPostsClient,
             ILocalVideoStorageService storage,
             IFacebookPostS3UploadQueue downloadQueue,
+            IGeminiCaptionGenerator captionGenerator,
             ILogger<PagesController> logger)
         {
             _context = context;
@@ -31,6 +33,7 @@ namespace Smapi.API.Controllers
             _apifyTikTokPostsClient = apifyTikTokPostsClient;
             _storage = storage;
             _downloadQueue = downloadQueue;
+            _captionGenerator = captionGenerator;
             _logger = logger;
         }
 
@@ -659,6 +662,89 @@ namespace Smapi.API.Controllers
                     .OrderByDescending(post => post.ScrapedAt)
                     .Select(ToResponse)
                     .ToList()
+            });
+        }
+
+        [HttpPost("rednote/downloads/{id:int}/caption/retry")]
+        public async Task<IActionResult> RetryRedNoteCaption(
+            int id,
+            [FromBody] RedNoteCaptionRetryRequest request,
+            CancellationToken cancellationToken)
+        {
+            request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
+            request.PageId = string.IsNullOrWhiteSpace(request.PageId) ? "rednote" : request.PageId.Trim();
+
+            var post = await _context.FacebookPostUrls
+                .FirstOrDefaultAsync(
+                    item => item.Id == id
+                        && item.UserId == request.UserId
+                        && item.PageId == request.PageId
+                        && item.Platform == SocialPostPlatform.RedNote,
+                    cancellationToken);
+
+            if (post is null)
+            {
+                return NotFound(new { success = false, message = "RedNote download row was not found." });
+            }
+
+            if (post.S3UploadStatus is not (FacebookPostS3UploadStatus.Downloaded or FacebookPostS3UploadStatus.Uploaded)
+                || string.IsNullOrWhiteSpace(post.S3Key))
+            {
+                return BadRequest(new { success = false, message = "Download the RedNote video before retrying the AI caption.", post = ToResponse(post) });
+            }
+
+            if (!HasExistingLocalDownload(post))
+            {
+                MarkLocalDownloadMissing(post);
+                await _context.SaveChangesAsync(cancellationToken);
+                return BadRequest(new { success = false, message = "The local video file is missing. Download it again before retrying the AI caption.", post = ToResponse(post) });
+            }
+
+            var captionPrompt = request.CaptionPrompt?.Trim();
+            if (!string.IsNullOrWhiteSpace(captionPrompt))
+            {
+                await SaveRedNoteCaptionPromptAsync(
+                    request.UserId,
+                    request.PageId,
+                    captionPrompt,
+                    cancellationToken);
+            }
+
+            string localVideoPath;
+            try
+            {
+                localVideoPath = _storage.GetAbsolutePath(post.S3Key);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Invalid local storage key for RedNote post {PostId}.", post.Id);
+                return BadRequest(new { success = false, message = "The saved local video path is invalid. Download it again before retrying the AI caption.", post = ToResponse(post) });
+            }
+
+            var generatedCaption = await _captionGenerator.GenerateCaptionAsync(
+                localVideoPath,
+                post,
+                cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(generatedCaption))
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new
+                {
+                    success = false,
+                    message = "AI caption could not be generated. Check the Gemini model/API key and this page's caption prompt.",
+                    post = ToResponse(post)
+                });
+            }
+
+            post.Caption = generatedCaption;
+            post.S3UploadError = null;
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = "RedNote AI caption regenerated successfully.",
+                post = ToResponse(post)
             });
         }
 
