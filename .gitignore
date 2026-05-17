@@ -50,6 +50,12 @@ next-env.d.ts
 # App Specific
 **/downloads/
 **/logs/
+!downloads/
+downloads/*
+!downloads/.gitkeep
+!logs/
+logs/*
+!logs/.gitkeep
 /rednote/
 
 # Temporary / Scratch

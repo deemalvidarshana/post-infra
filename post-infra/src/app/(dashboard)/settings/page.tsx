@@ -17,24 +17,40 @@ interface ApifySettingsResponse {
   updatedAt?: string;
 }
 
+interface GeminiSettingsResponse {
+  userId: string;
+  model: string;
+  apiKey?: string;
+  hasApiKey: boolean;
+  apiKeyLength: number;
+  updatedAt?: string;
+}
+
 export default function SettingsPage() {
   const [message, setMessage] = useState('');
   const [isSavingApify, setIsSavingApify] = useState(false);
+  const [isSavingGemini, setIsSavingGemini] = useState(false);
   const [downloadFolder, setDownloadFolder] = useState('');
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [apifyToken, setApifyToken] = useState('');
   const [hasSavedApifyToken, setHasSavedApifyToken] = useState(false);
   const [apifyTokenLength, setApifyTokenLength] = useState(0);
   const [apifyUpdatedAt, setApifyUpdatedAt] = useState('');
+  const [geminiModel, setGeminiModel] = useState('');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [hasSavedGeminiApiKey, setHasSavedGeminiApiKey] = useState(false);
+  const [geminiApiKeyLength, setGeminiApiKeyLength] = useState(0);
+  const [geminiUpdatedAt, setGeminiUpdatedAt] = useState('');
   const hasLoadedStoredUser = useRef(false);
 
   const loadSettings = useCallback(async () => {
     setMessage('');
 
     try {
-      const [localResponse, apifyResponse] = await Promise.all([
+      const [localResponse, apifyResponse, geminiResponse] = await Promise.all([
         fetch('/api/smapi/Settings/s3/global'),
-        fetch('/api/smapi/Settings/apify')
+        fetch('/api/smapi/Settings/apify'),
+        fetch('/api/smapi/Settings/gemini')
       ]);
 
       if (!localResponse.ok) {
@@ -59,6 +75,24 @@ export default function SettingsPage() {
         setApifyToken(apifyData.apiToken || '');
       } else {
         setMessage('Local settings loaded, but Apify settings could not be loaded.');
+        return;
+      }
+
+      if (geminiResponse.status === 404) {
+        setGeminiModel('');
+        setGeminiApiKey('');
+        setHasSavedGeminiApiKey(false);
+        setGeminiApiKeyLength(0);
+        setGeminiUpdatedAt('');
+      } else if (geminiResponse.ok) {
+        const geminiData = await geminiResponse.json() as GeminiSettingsResponse;
+        setGeminiModel(geminiData.model || '');
+        setGeminiApiKey(geminiData.apiKey || '');
+        setHasSavedGeminiApiKey(geminiData.hasApiKey);
+        setGeminiApiKeyLength(geminiData.apiKeyLength || 0);
+        setGeminiUpdatedAt(geminiData.updatedAt || '');
+      } else {
+        setMessage('Local and Apify settings loaded, but Gemini settings could not be loaded.');
         return;
       }
 
@@ -112,6 +146,51 @@ export default function SettingsPage() {
       setMessage('Could not connect to the backend server.');
     } finally {
       setIsSavingApify(false);
+    }
+  };
+
+  const saveGeminiSettings = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setMessage('');
+
+    if (!geminiModel.trim()) {
+      setMessage('Enter a Gemini model before saving.');
+      return;
+    }
+
+    if (!geminiApiKey.trim()) {
+      setMessage('Enter a Gemini API key before saving.');
+      return;
+    }
+
+    setIsSavingGemini(true);
+    try {
+      const response = await fetch('/api/smapi/Settings/gemini', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: geminiModel.trim(),
+          apiKey: geminiApiKey.trim()
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setMessage(data.message || `Failed to save Gemini settings. Backend status ${response.status}.`);
+        return;
+      }
+
+      const savedSettings = data.settings as GeminiSettingsResponse | undefined;
+      setGeminiModel(savedSettings?.model || geminiModel.trim());
+      setGeminiApiKey(savedSettings?.apiKey || geminiApiKey.trim());
+      setHasSavedGeminiApiKey(savedSettings?.hasApiKey ?? true);
+      setGeminiApiKeyLength(savedSettings?.apiKeyLength || geminiApiKey.trim().length);
+      setGeminiUpdatedAt(savedSettings?.updatedAt || new Date().toISOString());
+      setMessage('Global Gemini settings saved successfully.');
+    } catch {
+      setMessage('Could not connect to the backend server.');
+    } finally {
+      setIsSavingGemini(false);
     }
   };
 
@@ -210,6 +289,77 @@ export default function SettingsPage() {
               <>
                 <span className="material-symbols-outlined text-sm">vpn_key</span>
                 Save Apify Key
+              </>
+            )}
+          </button>
+        </form>
+      </section>
+
+      <section>
+        <form onSubmit={saveGeminiSettings} className="glass-panel rounded-xl border border-white/5 p-6 space-y-5">
+          <div>
+            <h2 className="text-lg font-bold text-white">Gemini API</h2>
+            <p className="text-sm text-neutral-500 mt-1">One global model and API key used by Gemini caption automation.</p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <label className="space-y-1 block">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">Model</span>
+              <input
+                required
+                type="text"
+                value={geminiModel}
+                onChange={(event) => setGeminiModel(event.target.value)}
+                className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all"
+                placeholder="gemini-2.0-flash"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+
+            <label className="space-y-1 block">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">API Key</span>
+              <input
+                required
+                type="text"
+                value={geminiApiKey}
+                onChange={(event) => setGeminiApiKey(event.target.value)}
+                className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all"
+                placeholder="AIza..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+          </div>
+
+          <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3 text-sm text-neutral-300">
+            {hasSavedGeminiApiKey ? (
+              <div className="space-y-1">
+                <p className="font-semibold text-emerald-200">Gemini settings are saved in the database.</p>
+                <p className="text-xs text-neutral-500">
+                  Model: {geminiModel || '-'} | Key length: {geminiApiKeyLength || '-'} characters
+                  {geminiUpdatedAt ? ` | Updated: ${new Date(geminiUpdatedAt).toLocaleString()}` : ''}
+                </p>
+              </div>
+            ) : (
+              'No Gemini settings saved for this user yet.'
+            )}
+          </div>
+
+          <button
+            type="submit"
+            disabled={isSavingGemini}
+            className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition-all flex items-center justify-center gap-3 disabled:opacity-50 shadow-lg shadow-blue-600/20"
+          >
+            {isSavingGemini ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                Saving...
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-sm">key</span>
+                Save Gemini Settings
               </>
             )}
           </button>

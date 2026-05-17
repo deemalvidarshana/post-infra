@@ -38,7 +38,7 @@ namespace Smapi.API.Models.DTOs
         public string? S3EndpointUrl { get; set; }
 
         [MaxLength(32)]
-        public string GraphApiVersion { get; set; } = "v24.0";
+        public string? GraphApiVersion { get; set; } = "v24.0";
 
         [MaxLength(32)]
         public string Platform { get; set; } = "Facebook";
@@ -60,7 +60,7 @@ namespace Smapi.API.Models.DTOs
         public DateTime? StartAt { get; set; }
 
         [MaxLength(32)]
-        public string GraphApiVersion { get; set; } = "v24.0";
+        public string? GraphApiVersion { get; set; } = "v24.0";
 
         [MaxLength(32)]
         public string Platform { get; set; } = "Facebook";

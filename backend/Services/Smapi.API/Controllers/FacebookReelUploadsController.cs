@@ -154,9 +154,7 @@ namespace Smapi.API.Controllers
                 return BadRequest(new { success = false, message = "A valid direct video URL or scraped reel URL is required." });
             }
 
-            var caption = request.Platform == SocialPostPlatform.RedNote
-                ? null
-                : FirstNonEmpty(request.Caption, scrapedPost?.Caption);
+            var caption = FirstNonEmpty(request.Caption, scrapedPost?.Caption);
             var job = new FacebookReelUploadJob
             {
                 UserId = request.UserId,
@@ -301,7 +299,7 @@ namespace Smapi.API.Controllers
                     PageName = page.PageName,
                     FacebookPostUrlId = post.Id,
                     VideoSourceUrl = videoSourceUrl,
-                    Caption = request.Platform == SocialPostPlatform.RedNote ? null : post.Caption,
+                    Caption = post.Caption,
                     S3Key = post.S3Key,
                     S3Bucket = post.S3Bucket,
                     S3Region = post.S3Region,

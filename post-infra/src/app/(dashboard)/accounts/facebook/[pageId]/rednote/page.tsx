@@ -9,6 +9,7 @@ interface RedNoteDownload {
   platform?: string;
   permalinkUrl: string;
   pageId?: string;
+  caption?: string;
   s3UploadStatus: string;
   s3Key?: string;
   s3UploadedAt?: string;
@@ -26,15 +27,25 @@ interface RedNoteQueueResponse {
   posts?: RedNoteDownload[];
 }
 
+interface RedNoteCaptionPromptResponse {
+  userId: string;
+  pageId: string;
+  prompt: string;
+  updatedAt?: string;
+}
+
 export default function RedNoteDownloaderPage() {
   const params = useParams<{ pageId: string }>();
   const pageId = useMemo(() => safeDecode(params.pageId), [params.pageId]);
   const [userId, setUserId] = useState(() => getStoredUserId());
   const [links, setLinks] = useState("");
+  const [captionPrompt, setCaptionPrompt] = useState("");
+  const [promptUpdatedAt, setPromptUpdatedAt] = useState("");
   const [downloads, setDownloads] = useState<RedNoteDownload[]>([]);
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isQueueing, setIsQueueing] = useState(false);
+  const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [busyPostIds, setBusyPostIds] = useState<number[]>([]);
   const hasLoadedStoredUser = useRef(false);
 
@@ -73,6 +84,32 @@ export default function RedNoteDownloaderPage() {
     }
   }, [pageId, userId]);
 
+  const loadCaptionPrompt = useCallback(async (nextUserId = userId) => {
+    if (!nextUserId.trim()) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/api/smapi/Pages/rednote/caption-prompt/${encodeURIComponent(nextUserId.trim())}?pageId=${encodeURIComponent(pageId)}`
+      );
+
+      if (response.status === 404) {
+        setCaptionPrompt("");
+        setPromptUpdatedAt("");
+        return;
+      }
+
+      const data = await response.json().catch(() => null) as RedNoteCaptionPromptResponse | null;
+      if (response.ok && data) {
+        setCaptionPrompt(data.prompt || "");
+        setPromptUpdatedAt(data.updatedAt || "");
+      }
+    } catch {
+      setMessage("Could not load the saved RedNote caption prompt.");
+    }
+  }, [pageId, userId]);
+
   useEffect(() => {
     if (hasLoadedStoredUser.current || !userId.trim()) {
       return;
@@ -80,7 +117,8 @@ export default function RedNoteDownloaderPage() {
 
     hasLoadedStoredUser.current = true;
     void loadDownloads(userId);
-  }, [loadDownloads, userId]);
+    void loadCaptionPrompt(userId);
+  }, [loadCaptionPrompt, loadDownloads, userId]);
 
   useEffect(() => {
     if (!userId.trim() || runningDownloads.length === 0) {
@@ -107,6 +145,11 @@ export default function RedNoteDownloaderPage() {
       return;
     }
 
+    if (!captionPrompt.trim()) {
+      setMessage("Enter a caption prompt for this Facebook Page before queueing downloads.");
+      return;
+    }
+
     if (singlePostId) {
       setBusyPostIds((currentIds) => Array.from(new Set([...currentIds, singlePostId])));
     } else {
@@ -122,7 +165,8 @@ export default function RedNoteDownloaderPage() {
         body: JSON.stringify({
           userId: userId.trim(),
           pageId,
-          urls
+          urls,
+          captionPrompt: captionPrompt.trim()
         })
       });
 
@@ -154,6 +198,7 @@ export default function RedNoteDownloaderPage() {
         });
       });
       setLinks("");
+      setPromptUpdatedAt(new Date().toISOString());
       await loadDownloads(userId);
     } catch {
       setMessage("Could not connect to the backend server.");
@@ -174,6 +219,49 @@ export default function RedNoteDownloaderPage() {
       .filter(Boolean);
 
     await queueLinks(urls);
+  };
+
+  const handleSaveCaptionPrompt = async () => {
+    setMessage("");
+
+    if (!userId.trim()) {
+      setMessage("Please enter a User ID.");
+      return;
+    }
+
+    if (!captionPrompt.trim()) {
+      setMessage("Enter a caption prompt for this Facebook Page.");
+      return;
+    }
+
+    setIsSavingPrompt(true);
+    window.localStorage.setItem("smapi_user_id", userId.trim());
+
+    try {
+      const response = await fetch("/api/smapi/Pages/rednote/caption-prompt", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          pageId,
+          prompt: captionPrompt.trim()
+        })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Prompt save failed with status ${response.status}.`);
+        return;
+      }
+
+      const savedPrompt = data.prompt as RedNoteCaptionPromptResponse | undefined;
+      setCaptionPrompt(savedPrompt?.prompt || captionPrompt.trim());
+      setPromptUpdatedAt(savedPrompt?.updatedAt || new Date().toISOString());
+      setMessage(data.message || "RedNote caption prompt saved.");
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setIsSavingPrompt(false);
+    }
   };
 
   const handleStopDownloads = async (postsToStop: RedNoteDownload[]) => {
@@ -301,7 +389,10 @@ export default function RedNoteDownloaderPage() {
           />
           <button
             type="button"
-            onClick={() => loadDownloads()}
+            onClick={() => {
+              void loadDownloads();
+              void loadCaptionPrompt();
+            }}
             disabled={isLoading}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-50"
           >
@@ -325,19 +416,51 @@ export default function RedNoteDownloaderPage() {
         </div>
 
         <form onSubmit={handleQueueLinks} className="mt-6 grid grid-cols-1 xl:grid-cols-[1.3fr_0.7fr] gap-6">
-          <label className="space-y-2">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">RedNote Links</span>
-            <textarea
-              required
-              rows={7}
-              value={links}
-              onChange={(event) => setLinks(event.target.value)}
-              placeholder="http://xhslink.com/o/AibcYPm7lWn"
-              className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-rose-500 focus:outline-none transition-all resize-none"
-            />
-          </label>
+          <div className="space-y-4">
+            <label className="space-y-2 block">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">RedNote Links</span>
+              <textarea
+                required
+                rows={6}
+                value={links}
+                onChange={(event) => setLinks(event.target.value)}
+                placeholder="http://xhslink.com/o/AibcYPm7lWn"
+                className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-rose-500 focus:outline-none transition-all resize-none"
+              />
+            </label>
+
+            <label className="space-y-2 block">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">Caption Prompt</span>
+              <textarea
+                required
+                rows={4}
+                value={captionPrompt}
+                onChange={(event) => setCaptionPrompt(event.target.value)}
+                placeholder="Write a short Facebook Reel caption from the video frames. Return only the caption."
+                className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-rose-500 focus:outline-none transition-all resize-none"
+              />
+            </label>
+          </div>
 
           <div className="flex flex-col gap-4">
+            <button
+              type="button"
+              onClick={handleSaveCaptionPrompt}
+              disabled={isSavingPrompt || !captionPrompt.trim()}
+              className="w-full py-3 rounded-lg border border-white/10 bg-white/5 text-sm font-bold text-neutral-200 hover:bg-white/10 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {isSavingPrompt ? (
+                <>
+                  <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-sm">save</span>
+                  Save Prompt
+                </>
+              )}
+            </button>
             <button
               type="submit"
               disabled={isQueueing}
@@ -364,6 +487,11 @@ export default function RedNoteDownloaderPage() {
               <span className="material-symbols-outlined text-sm">stop_circle</span>
               Stop Running
             </button>
+            {promptUpdatedAt && (
+              <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3 text-xs text-neutral-500">
+                Prompt saved: {formatDateTime(promptUpdatedAt)}
+              </div>
+            )}
             {message && (
               <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3 text-sm text-neutral-300">
                 {message}
@@ -383,8 +511,9 @@ export default function RedNoteDownloaderPage() {
         </div>
 
         <div className="rounded-lg border border-white/5 overflow-hidden">
-          <div className="hidden md:grid grid-cols-[minmax(260px,1fr)_150px_180px_150px_124px] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+          <div className="hidden md:grid grid-cols-[minmax(220px,0.9fr)_minmax(240px,360px)_130px_160px_130px_124px] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Link</span>
+            <span>Caption</span>
             <span>Status</span>
             <span>Local File</span>
             <span>Queued</span>
@@ -392,12 +521,15 @@ export default function RedNoteDownloaderPage() {
           </div>
 
           {downloads.length > 0 ? downloads.map((post) => (
-            <div key={post.id} className="grid grid-cols-1 md:grid-cols-[minmax(260px,1fr)_150px_180px_150px_124px] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
+            <div key={post.id} className="grid grid-cols-1 md:grid-cols-[minmax(220px,0.9fr)_minmax(240px,360px)_130px_160px_130px_124px] gap-3 md:gap-4 bg-black/20 px-4 py-4 border-t border-white/5">
               <div className="min-w-0 flex items-center gap-3">
                 <span className="material-symbols-outlined text-rose-300 text-sm">link</span>
                 <a href={post.permalinkUrl} target="_blank" rel="noreferrer" className="truncate text-sm text-neutral-200 hover:text-white">
                   {post.permalinkUrl}
                 </a>
+              </div>
+              <div className="min-w-0 max-w-[360px] text-sm leading-6 text-neutral-300 whitespace-normal break-words">
+                {post.caption || "Pending AI caption"}
               </div>
               <div className="flex min-w-0 items-center gap-2">
                 <span className={`inline-flex w-fit rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(post.s3UploadStatus)}`}>

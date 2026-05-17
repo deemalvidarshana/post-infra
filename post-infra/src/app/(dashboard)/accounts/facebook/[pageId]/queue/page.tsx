@@ -68,7 +68,7 @@ export default function QueuePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingPage, setIsSavingPage] = useState(false);
   const [publishForm, setPublishForm] = useState({
-    graphApiVersion: ""
+    graphApiVersion: "v24.0"
   });
   const hasLoadedStoredUser = useRef(false);
   const previousSourcePlatform = useRef<SourcePlatform>("Facebook");
@@ -242,7 +242,7 @@ export default function QueuePage() {
           platform: sourcePlatform,
           dailyPostCount,
           startAt: startAt.toISOString(),
-          graphApiVersion: publishForm.graphApiVersion.trim() || null
+          graphApiVersion: publishForm.graphApiVersion.trim() || "v24.0"
         })
       });
 

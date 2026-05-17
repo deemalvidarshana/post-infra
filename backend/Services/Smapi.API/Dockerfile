@@ -17,6 +17,19 @@ RUN dotnet publish "Smapi.API.csproj" -c Release -o /app/publish /p:UseAppHost=f
 # Runtime Stage
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
+
+# Runtime tools required by local video download and AI frame extraction.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        python3 \
+        python3-venv \
+    && python3 -m venv /opt/yt-dlp \
+    && /opt/yt-dlp/bin/pip install --no-cache-dir --upgrade pip yt-dlp \
+    && ln -s /opt/yt-dlp/bin/yt-dlp /usr/local/bin/yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=publish /app/publish .
 
 # Environment variables

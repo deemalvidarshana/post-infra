@@ -65,6 +65,7 @@ namespace Smapi.API.Services
                 var dbContext = scope.ServiceProvider.GetRequiredService<SmapiDbContext>();
                 var downloader = scope.ServiceProvider.GetRequiredService<IYtDlpVideoDownloader>();
                 var storage = scope.ServiceProvider.GetRequiredService<ILocalVideoStorageService>();
+                var captionGenerator = scope.ServiceProvider.GetRequiredService<IGeminiCaptionGenerator>();
 
                 var post = await dbContext.FacebookPostUrls
                     .FirstAsync(item => item.Id == workItem.PostId && item.UserId == workItem.UserId, cancellationToken);
@@ -109,6 +110,19 @@ namespace Smapi.API.Services
                     localVideoPath,
                     storageKey,
                     downloadToken);
+
+                if (post.Platform == SocialPostPlatform.RedNote)
+                {
+                    var generatedCaption = await captionGenerator.GenerateCaptionAsync(
+                        localVideoPath,
+                        post,
+                        downloadToken);
+
+                    if (!string.IsNullOrWhiteSpace(generatedCaption))
+                    {
+                        post.Caption = generatedCaption;
+                    }
+                }
 
                 post.S3UploadStatus = FacebookPostS3UploadStatus.Downloaded;
                 post.S3Bucket = null;

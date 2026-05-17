@@ -29,6 +29,11 @@ builder.Services.AddSingleton<IFacebookPostS3UploadQueue, FacebookPostS3UploadQu
 builder.Services.AddSingleton<IFacebookPostS3DownloadCancellation, FacebookPostS3DownloadCancellation>();
 builder.Services.AddScoped<IYtDlpVideoDownloader, YtDlpVideoDownloader>();
 builder.Services.AddScoped<ILocalVideoStorageService, LocalVideoStorageService>();
+builder.Services.AddScoped<IVideoFrameExtractor, FfmpegVideoFrameExtractor>();
+builder.Services.AddHttpClient<IGeminiCaptionGenerator, GeminiCaptionGenerator>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
 builder.Services.AddHostedService<FacebookReelUploadWorker>();
 builder.Services.AddHostedService<FacebookPostS3UploadWorker>();
 

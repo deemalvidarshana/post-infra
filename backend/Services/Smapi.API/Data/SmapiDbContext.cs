@@ -14,6 +14,8 @@ namespace Smapi.API.Data
         public DbSet<FacebookReelUploadJob> FacebookReelUploadJobs { get; set; }
         public DbSet<S3StorageSetting> S3StorageSettings { get; set; }
         public DbSet<ApifySetting> ApifySettings { get; set; }
+        public DbSet<GeminiSetting> GeminiSettings { get; set; }
+        public DbSet<RedNoteCaptionPrompt> RedNoteCaptionPrompts { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -49,6 +51,16 @@ namespace Smapi.API.Data
             modelBuilder.Entity<ApifySetting>(entity =>
             {
                 entity.HasIndex(e => e.UserId).IsUnique();
+            });
+
+            modelBuilder.Entity<GeminiSetting>(entity =>
+            {
+                entity.HasIndex(e => e.UserId).IsUnique();
+            });
+
+            modelBuilder.Entity<RedNoteCaptionPrompt>(entity =>
+            {
+                entity.HasIndex(e => new { e.UserId, e.PageId }).IsUnique();
             });
         }
     }

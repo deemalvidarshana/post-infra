@@ -64,6 +64,30 @@ namespace Smapi.API.Models.DTOs
         public string UserId { get; set; } = "user-123";
 
         public string PageId { get; set; } = "rednote";
+
+        [MaxLength(4096)]
+        public string? CaptionPrompt { get; set; }
+    }
+
+    public class RedNoteCaptionPromptRequest
+    {
+        public string UserId { get; set; } = "user-123";
+
+        public string PageId { get; set; } = "rednote";
+
+        [MaxLength(4096)]
+        public string? Prompt { get; set; }
+    }
+
+    public class RedNoteCaptionPromptResponse
+    {
+        public string UserId { get; set; } = string.Empty;
+
+        public string PageId { get; set; } = string.Empty;
+
+        public string Prompt { get; set; } = string.Empty;
+
+        public DateTime? UpdatedAt { get; set; }
     }
 
     public class RedNoteDownloadResponse

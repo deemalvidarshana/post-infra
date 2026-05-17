@@ -492,6 +492,57 @@ namespace Smapi.API.Controllers
                 .ToListAsync(cancellationToken);
         }
 
+        [HttpGet("rednote/caption-prompt/{userId}")]
+        public async Task<ActionResult<RedNoteCaptionPromptResponse>> GetRedNoteCaptionPrompt(
+            string userId,
+            [FromQuery] string? pageId,
+            CancellationToken cancellationToken)
+        {
+            userId = string.IsNullOrWhiteSpace(userId) ? "user-123" : userId.Trim();
+            pageId = string.IsNullOrWhiteSpace(pageId) ? "rednote" : pageId.Trim();
+
+            var prompt = await _context.RedNoteCaptionPrompts
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    item => item.UserId == userId && item.PageId == pageId,
+                    cancellationToken);
+
+            if (prompt is null)
+            {
+                return NotFound(new { success = false, message = "RedNote caption prompt has not been saved for this page yet." });
+            }
+
+            return Ok(ToResponse(prompt));
+        }
+
+        [HttpPut("rednote/caption-prompt")]
+        public async Task<ActionResult<RedNoteCaptionPromptResponse>> SaveRedNoteCaptionPrompt(
+            [FromBody] RedNoteCaptionPromptRequest request,
+            CancellationToken cancellationToken)
+        {
+            request.UserId = string.IsNullOrWhiteSpace(request.UserId) ? "user-123" : request.UserId.Trim();
+            request.PageId = string.IsNullOrWhiteSpace(request.PageId) ? "rednote" : request.PageId.Trim();
+            var prompt = request.Prompt?.Trim();
+
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                return BadRequest(new { success = false, message = "RedNote caption prompt is required." });
+            }
+
+            var savedPrompt = await SaveRedNoteCaptionPromptAsync(
+                request.UserId,
+                request.PageId,
+                prompt,
+                cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = "RedNote caption prompt saved successfully.",
+                prompt = ToResponse(savedPrompt)
+            });
+        }
+
         [HttpPost("rednote/downloads")]
         public async Task<ActionResult<RedNoteDownloadResponse>> QueueRedNoteDownloads(
             [FromBody] RedNoteDownloadRequest request,
@@ -510,6 +561,15 @@ namespace Smapi.API.Controllers
             if (validUrls.Count == 0)
             {
                 return BadRequest(new { success = false, message = "At least one valid RedNote/Xiaohongshu URL is required." });
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.CaptionPrompt))
+            {
+                await SaveRedNoteCaptionPromptAsync(
+                    request.UserId,
+                    request.PageId,
+                    request.CaptionPrompt.Trim(),
+                    cancellationToken);
             }
 
             var existingPosts = (await _context.FacebookPostUrls
@@ -813,6 +873,51 @@ namespace Smapi.API.Controllers
                 S3UploadedAt = post.S3UploadedAt,
                 S3UploadError = post.S3UploadError,
                 ScrapedAt = post.ScrapedAt
+            };
+        }
+
+        private async Task<RedNoteCaptionPrompt> SaveRedNoteCaptionPromptAsync(
+            string userId,
+            string pageId,
+            string prompt,
+            CancellationToken cancellationToken)
+        {
+            var existingPrompt = await _context.RedNoteCaptionPrompts
+                .FirstOrDefaultAsync(
+                    item => item.UserId == userId && item.PageId == pageId,
+                    cancellationToken);
+            var now = DateTime.UtcNow;
+
+            if (existingPrompt is null)
+            {
+                existingPrompt = new RedNoteCaptionPrompt
+                {
+                    UserId = userId,
+                    PageId = pageId,
+                    Prompt = prompt,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                _context.RedNoteCaptionPrompts.Add(existingPrompt);
+            }
+            else
+            {
+                existingPrompt.Prompt = prompt;
+                existingPrompt.UpdatedAt = now;
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            return existingPrompt;
+        }
+
+        private static RedNoteCaptionPromptResponse ToResponse(RedNoteCaptionPrompt prompt)
+        {
+            return new RedNoteCaptionPromptResponse
+            {
+                UserId = prompt.UserId,
+                PageId = prompt.PageId,
+                Prompt = prompt.Prompt,
+                UpdatedAt = prompt.UpdatedAt
             };
         }
 

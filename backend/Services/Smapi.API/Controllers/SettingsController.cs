@@ -12,6 +12,7 @@ namespace Smapi.API.Controllers
     public class SettingsController : ControllerBase
     {
         private const string GlobalApifySettingUserId = "__global__";
+        private const string GlobalGeminiSettingUserId = "__global__";
         private readonly SmapiDbContext _context;
         private readonly ILocalVideoStorageService _storage;
 
@@ -150,6 +151,104 @@ namespace Smapi.API.Controllers
                 ApiToken = setting.ApiToken,
                 HasApiToken = !string.IsNullOrWhiteSpace(setting.ApiToken),
                 ApiTokenLength = setting.ApiToken?.Length ?? 0,
+                UpdatedAt = setting.UpdatedAt
+            };
+        }
+
+        [HttpGet("gemini")]
+        public async Task<ActionResult<GeminiSettingResponse>> GetGeminiSettings(
+            CancellationToken cancellationToken)
+        {
+            var setting = await FindGlobalGeminiSettingAsync(cancellationToken);
+
+            if (setting is null)
+            {
+                return NotFound(new { success = false, message = "Gemini settings have not been saved yet." });
+            }
+
+            return Ok(ToResponse(setting));
+        }
+
+        [HttpGet("gemini/{userId}")]
+        public Task<ActionResult<GeminiSettingResponse>> GetGeminiSettingsForLegacyUserRoute(
+            string userId,
+            CancellationToken cancellationToken)
+        {
+            return GetGeminiSettings(cancellationToken);
+        }
+
+        [HttpPut("gemini")]
+        public async Task<IActionResult> SaveGeminiSettings(
+            [FromBody] GeminiSettingRequest request,
+            CancellationToken cancellationToken)
+        {
+            var model = request.Model?.Trim();
+            var apiKey = request.ApiKey?.Trim();
+
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                return BadRequest(new { success = false, message = "Gemini model is required." });
+            }
+
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                return BadRequest(new { success = false, message = "Gemini API key is required." });
+            }
+
+            var existing = await _context.GeminiSettings
+                .FirstOrDefaultAsync(item => item.UserId == GlobalGeminiSettingUserId, cancellationToken);
+            var now = DateTime.UtcNow;
+
+            if (existing is null)
+            {
+                existing = new GeminiSetting
+                {
+                    UserId = GlobalGeminiSettingUserId,
+                    Model = model,
+                    ApiKey = apiKey,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                _context.GeminiSettings.Add(existing);
+            }
+            else
+            {
+                existing.Model = model;
+                existing.ApiKey = apiKey;
+                existing.UpdatedAt = now;
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = "Gemini settings saved successfully.",
+                settings = ToResponse(existing)
+            });
+        }
+
+        private async Task<GeminiSetting?> FindGlobalGeminiSettingAsync(CancellationToken cancellationToken)
+        {
+            return await _context.GeminiSettings
+                .AsNoTracking()
+                .Where(item => item.UserId == GlobalGeminiSettingUserId)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? await _context.GeminiSettings
+                    .AsNoTracking()
+                    .OrderByDescending(item => item.UpdatedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        private static GeminiSettingResponse ToResponse(GeminiSetting setting)
+        {
+            return new GeminiSettingResponse
+            {
+                UserId = GlobalGeminiSettingUserId,
+                Model = setting.Model,
+                ApiKey = setting.ApiKey,
+                HasApiKey = !string.IsNullOrWhiteSpace(setting.ApiKey),
+                ApiKeyLength = setting.ApiKey?.Length ?? 0,
                 UpdatedAt = setting.UpdatedAt
             };
         }

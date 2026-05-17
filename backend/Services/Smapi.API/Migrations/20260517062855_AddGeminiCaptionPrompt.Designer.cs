@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Smapi.API.Data;
@@ -11,9 +12,11 @@ using Smapi.API.Data;
 namespace Smapi.API.Migrations
 {
     [DbContext(typeof(SmapiDbContext))]
-    partial class SmapiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260517062855_AddGeminiCaptionPrompt")]
+    partial class AddGeminiCaptionPrompt
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -328,38 +331,6 @@ namespace Smapi.API.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId")
-                        .IsUnique();
-
-                    b.ToTable("GeminiSettings");
-                });
-
-            modelBuilder.Entity("Smapi.API.Models.RedNoteCaptionPrompt", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("PageId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
                     b.Property<string>("Prompt")
                         .IsRequired()
                         .HasMaxLength(4096)
@@ -375,10 +346,10 @@ namespace Smapi.API.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId", "PageId")
+                    b.HasIndex("UserId")
                         .IsUnique();
 
-                    b.ToTable("RedNoteCaptionPrompts");
+                    b.ToTable("GeminiSettings");
                 });
 
             modelBuilder.Entity("Smapi.API.Models.S3StorageSetting", b =>
