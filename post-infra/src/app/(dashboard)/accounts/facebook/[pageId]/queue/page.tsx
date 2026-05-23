@@ -74,6 +74,7 @@ export default function QueuePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingPage, setIsSavingPage] = useState(false);
   const [deletingJobId, setDeletingJobId] = useState<number | null>(null);
+  const [isDeletingAllVideos, setIsDeletingAllVideos] = useState(false);
   const [pausingJobId, setPausingJobId] = useState<number | null>(null);
   const [startingJobId, setStartingJobId] = useState<number | null>(null);
   const [jobTimeEdits, setJobTimeEdits] = useState<Record<number, string>>({});
@@ -104,9 +105,18 @@ export default function QueuePage() {
     [activeJobPostIds, posts]
   );
   const downloadedPostIds = useMemo(() => new Set(posts.map((post) => post.id)), [posts]);
+  const publishedPostIds = useMemo(
+    () => new Set(visibleJobs
+      .filter((job) => job.facebookPostUrlId && job.status === "Published")
+      .map((job) => job.facebookPostUrlId as number)),
+    [visibleJobs]
+  );
   const reschedulableQueuedJobs = useMemo(
-    () => visibleJobs.filter((job) => job.status === "Queued" && job.facebookPostUrlId && downloadedPostIds.has(job.facebookPostUrlId)),
-    [downloadedPostIds, visibleJobs]
+    () => visibleJobs.filter((job) => job.status === "Queued"
+      && job.facebookPostUrlId
+      && downloadedPostIds.has(job.facebookPostUrlId)
+      && !publishedPostIds.has(job.facebookPostUrlId)),
+    [downloadedPostIds, publishedPostIds, visibleJobs]
   );
   const queueActionCount = queueablePosts.length + (includeQueued ? reschedulableQueuedJobs.length : 0);
   const schedulePreview = useMemo(
@@ -165,7 +175,7 @@ export default function QueuePage() {
         accessToken: currentPage?.accessToken || ""
       });
       setPosts(Array.isArray(postsData) ? (postsData as ScrapedPost[]).filter((post) => isDownloadedPlatformVideo(post, sourcePlatform)) : []);
-      setJobs(Array.isArray(jobsData) ? jobsData : []);
+      setJobs(Array.isArray(jobsData) ? uniqueJobsById(jobsData) : []);
     } catch {
       setMessage("Could not load queue data from the backend.");
     } finally {
@@ -178,7 +188,7 @@ export default function QueuePage() {
       const response = await fetch(`/api/smapi/FacebookReelUploads/${encodeURIComponent(nextUserId.trim())}?pageId=${encodeURIComponent(routePageId)}&platform=${encodeURIComponent(sourcePlatform)}`);
       const data = await response.json();
       if (Array.isArray(data)) {
-        setJobs(data);
+        setJobs(uniqueJobsById(data));
       }
     } catch {
       // Polling failures are ignored so the active form stays usable.
@@ -317,7 +327,7 @@ export default function QueuePage() {
         return;
       }
 
-      setJobs((previousJobs) => [...(data.jobs || []), ...previousJobs]);
+      setJobs((previousJobs) => mergeJobsById(previousJobs, data.jobs || []));
       setMessage(data.message || `Queued ${data.queuedCount ?? 0} ${sourcePlatform} video(s).`);
       await loadJobs(userId);
     } catch {
@@ -409,7 +419,8 @@ export default function QueuePage() {
   };
 
   const handleDeleteJob = async (jobId: number) => {
-    const shouldDelete = window.confirm(`Delete upload job #${jobId}?`);
+    const targetJob = jobs.find((job) => job.id === jobId);
+    const shouldDelete = window.confirm(`Permanently delete upload job #${jobId}, its database source record, and local video file? This cannot be undone.`);
     if (!shouldDelete) {
       return;
     }
@@ -428,12 +439,58 @@ export default function QueuePage() {
         return;
       }
 
-      setJobs((previousJobs) => previousJobs.filter((job) => job.id !== jobId));
+      setJobs((previousJobs) => previousJobs.filter((job) => {
+        if (job.id === jobId) {
+          return false;
+        }
+
+        return !targetJob?.facebookPostUrlId || job.facebookPostUrlId !== targetJob.facebookPostUrlId;
+      }));
+      if (targetJob?.facebookPostUrlId) {
+        setPosts((previousPosts) => previousPosts.filter((post) => post.id !== targetJob.facebookPostUrlId));
+      }
       setMessage(data.message || `Deleted upload job #${jobId}.`);
     } catch {
       setMessage("Could not connect to the backend server.");
     } finally {
       setDeletingJobId(null);
+    }
+  };
+
+  const handleDeleteAllVideos = async () => {
+    if (!userId.trim() || !routePageId) {
+      setMessage("Enter a User ID and open this queue from a connected Facebook Page.");
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Permanently delete ALL ${sourcePlatform} videos for this page, including database records, local video files, and queued jobs? This cannot be undone.`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setMessage("");
+    setIsDeletingAllVideos(true);
+
+    try {
+      const response = await fetch(
+        `/api/smapi/FacebookReelUploads/page/${encodeURIComponent(userId.trim())}/${encodeURIComponent(routePageId)}?platform=${encodeURIComponent(sourcePlatform)}`,
+        { method: "DELETE" }
+      );
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Delete all failed with status ${response.status}.`);
+        return;
+      }
+
+      setPosts([]);
+      setJobs((previousJobs) => previousJobs.filter((job) => job.pageId !== routePageId));
+      await loadData(userId);
+      setMessage(data.message || `Deleted all ${sourcePlatform} videos for this page.`);
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setIsDeletingAllVideos(false);
     }
   };
 
@@ -747,12 +804,23 @@ export default function QueuePage() {
       </form>
 
       <section className="glass-panel p-6 rounded-xl border border-white/5">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col gap-3 mb-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-bold text-white">Queued Videos</h2>
             <p className="text-neutral-500 text-sm mt-1">Scheduled publish time, status, captions, and local downloaded {sourcePlatform} source details for this Facebook Page.</p>
           </div>
-          <span className="text-[10px] uppercase tracking-widest text-neutral-500">{visibleJobs.length} jobs</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] uppercase tracking-widest text-neutral-500">{visibleJobs.length} jobs</span>
+            <button
+              type="button"
+              onClick={handleDeleteAllVideos}
+              disabled={isDeletingAllVideos || (posts.length === 0 && visibleJobs.length === 0)}
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-red-200 hover:bg-red-500/20 disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[13px]">delete_sweep</span>
+              {isDeletingAllVideos ? "Deleting" : `Delete All ${sourcePlatform}`}
+            </button>
+          </div>
         </div>
 
         <div className="rounded-lg border border-white/5 overflow-hidden">
@@ -859,6 +927,23 @@ function compareSchedule(first: UploadJob, second: UploadJob) {
   const firstTime = getSortTime(first.scheduledFor) ?? getSortTime(first.createdAt) ?? 0;
   const secondTime = getSortTime(second.scheduledFor) ?? getSortTime(second.createdAt) ?? 0;
   return firstTime - secondTime;
+}
+
+function mergeJobsById(existingJobs: UploadJob[], incomingJobs: UploadJob[]) {
+  const jobsById = new Map<number, UploadJob>();
+  for (const job of existingJobs) {
+    jobsById.set(job.id, job);
+  }
+
+  for (const job of incomingJobs) {
+    jobsById.set(job.id, job);
+  }
+
+  return Array.from(jobsById.values());
+}
+
+function uniqueJobsById(jobs: UploadJob[]) {
+  return mergeJobsById([], jobs);
 }
 
 function getSortTime(value?: string) {

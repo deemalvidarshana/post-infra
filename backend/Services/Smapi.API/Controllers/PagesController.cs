@@ -884,85 +884,72 @@ namespace Smapi.API.Controllers
                 return NotFound(new { success = false, message = "Post not found." });
             }
 
-            if (!string.IsNullOrWhiteSpace(post.S3Key))
-            {
-                try
-                {
-                    var localPath = _storage.GetAbsolutePath(post.S3Key);
-                    _logger.LogInformation("Attempting to delete local video file for post {PostId} at path: {LocalPath}", id, localPath);
-                    
-                    if (System.IO.File.Exists(localPath))
-                    {
-                        System.IO.File.Delete(localPath);
-                        _logger.LogInformation("Successfully deleted local video file for post {PostId}.", id);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Local video file for post {PostId} was not found at path: {LocalPath}", id, localPath);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to delete local video file for post {PostId} at path: {LocalPath}", id, post.S3Key);
-                }
-            }
-            else
-            {
-                _logger.LogInformation("No S3Key (local path) found for post {PostId}, skipping file deletion.", id);
-            }
+            var linkedJobs = await _context.FacebookReelUploadJobs
+                .Where(job => job.FacebookPostUrlId == post.Id)
+                .ToListAsync(cancellationToken);
 
+            var deletedFileCount = DeleteLocalFiles(
+                new[] { post.S3Key }.Concat(linkedJobs.Select(job => job.S3Key)),
+                $"post {id}");
+
+            _context.FacebookReelUploadJobs.RemoveRange(linkedJobs);
             _context.FacebookPostUrls.Remove(post);
             await _context.SaveChangesAsync(cancellationToken);
 
-            return Ok(new { success = true, message = "Facebook post deleted successfully." });
+            return Ok(new
+            {
+                success = true,
+                message = $"Post deleted permanently with {linkedJobs.Count} upload job(s) and {deletedFileCount} local video file(s)."
+            });
         }
 
         [HttpDelete("facebook/posts/all/{userId}/{pageId}")]
-        public async Task<IActionResult> DeleteAllFacebookPosts(string userId, string pageId)
+        public async Task<IActionResult> DeleteAllFacebookPosts(
+            string userId,
+            string pageId,
+            [FromQuery] string? platform,
+            CancellationToken cancellationToken)
         {
             userId = userId.Trim();
             pageId = pageId.Trim();
+            var normalizedPlatform = NormalizeSourcePlatform(platform);
 
-            var posts = await _context.FacebookPostUrls
-                .Where(p => p.UserId == userId && p.PageId == pageId && p.Platform != SocialPostPlatform.RedNote)
-                .ToListAsync();
+            var postsQuery = _context.FacebookPostUrls
+                .Where(p => p.UserId == userId && p.PageId == pageId);
+
+            postsQuery = string.IsNullOrWhiteSpace(normalizedPlatform)
+                ? postsQuery.Where(p => p.Platform != SocialPostPlatform.RedNote)
+                : postsQuery.Where(p => p.Platform == normalizedPlatform);
+
+            var posts = await postsQuery.ToListAsync(cancellationToken);
 
             if (posts.Count == 0)
             {
                 return Ok(new { success = true, message = "No posts found to delete.", deletedCount = 0 });
             }
 
-            foreach (var post in posts)
-            {
-                _logger.LogInformation("Processing bulk delete for post {PostId}. S3Key: {S3Key}", post.Id, post.S3Key);
-                if (!string.IsNullOrWhiteSpace(post.S3Key))
-                {
-                    try
-                    {
-                        var localPath = _storage.GetAbsolutePath(post.S3Key);
-                        _logger.LogInformation("Attempting to delete local file for post {PostId} at: {Path}", post.Id, localPath);
-                        if (System.IO.File.Exists(localPath))
-                        {
-                            System.IO.File.Delete(localPath);
-                            _logger.LogInformation("Successfully deleted local file for post {PostId}", post.Id);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Local file for post {PostId} not found at: {Path}", post.Id, localPath);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to delete local video file for post {PostId}", post.Id);
-                    }
-                }
-            }
+            var postIds = posts.Select(post => post.Id).ToList();
+            var linkedJobs = await _context.FacebookReelUploadJobs
+                .Where(job => job.FacebookPostUrlId.HasValue && postIds.Contains(job.FacebookPostUrlId.Value))
+                .ToListAsync(cancellationToken);
+
+            var deletedFileCount = DeleteLocalFiles(
+                posts.Select(post => post.S3Key).Concat(linkedJobs.Select(job => job.S3Key)),
+                $"bulk page {pageId}");
 
             _logger.LogInformation("Removing {Count} post records from database for user {UserId} and page {PageId}", posts.Count, userId, pageId);
+            _context.FacebookReelUploadJobs.RemoveRange(linkedJobs);
             _context.FacebookPostUrls.RemoveRange(posts);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
 
-            return Ok(new { success = true, message = $"Deleted {posts.Count} posts and their video files successfully.", deletedCount = posts.Count });
+            return Ok(new
+            {
+                success = true,
+                message = $"Deleted {posts.Count} posts, {linkedJobs.Count} upload job(s), and {deletedFileCount} local video file(s) successfully.",
+                deletedCount = posts.Count,
+                deletedJobCount = linkedJobs.Count,
+                deletedFileCount
+            });
         }
 
         private static FacebookPostUrlResponse ToResponse(FacebookPostUrl post)
@@ -1198,6 +1185,38 @@ namespace Smapi.API.Controllers
             }
 
             return null;
+        }
+
+        private int DeleteLocalFiles(IEnumerable<string?> storageKeys, string context)
+        {
+            var deletedCount = 0;
+            foreach (var storageKey in storageKeys
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var localPath = _storage.GetAbsolutePath(storageKey);
+                    _logger.LogInformation("Attempting to delete local file for {Context} at {Path}.", context, localPath);
+
+                    if (!System.IO.File.Exists(localPath))
+                    {
+                        _logger.LogWarning("Local file for {Context} was not found at {Path}.", context, localPath);
+                        continue;
+                    }
+
+                    System.IO.File.Delete(localPath);
+                    deletedCount++;
+                    _logger.LogInformation("Successfully deleted local file for {Context} at {Path}.", context, localPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to delete local video file for {Context} with storage key {StorageKey}.", context, storageKey);
+                }
+            }
+
+            return deletedCount;
         }
 
         private static string TrimForClient(string value)

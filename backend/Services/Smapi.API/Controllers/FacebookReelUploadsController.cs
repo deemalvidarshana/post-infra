@@ -90,16 +90,110 @@ namespace Smapi.API.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteJob(int id, CancellationToken cancellationToken)
         {
-            var job = await _context.FacebookReelUploadJobs.FindAsync(new object[] { id }, cancellationToken);
+            var job = await _context.FacebookReelUploadJobs
+                .Include(item => item.FacebookPostUrl)
+                .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
             if (job == null)
             {
                 return NotFound(new { success = false, message = "Upload job not found." });
             }
 
-            _context.FacebookReelUploadJobs.Remove(job);
+            List<FacebookReelUploadJob> linkedJobs;
+            if (job.FacebookPostUrlId.HasValue)
+            {
+                linkedJobs = await _context.FacebookReelUploadJobs
+                    .Where(item => item.FacebookPostUrlId == job.FacebookPostUrlId.Value)
+                    .ToListAsync(cancellationToken);
+
+                _context.FacebookReelUploadJobs.RemoveRange(linkedJobs);
+
+                if (job.FacebookPostUrl is not null)
+                {
+                    _context.FacebookPostUrls.Remove(job.FacebookPostUrl);
+                }
+            }
+            else
+            {
+                linkedJobs = new List<FacebookReelUploadJob> { job };
+                _context.FacebookReelUploadJobs.Remove(job);
+            }
+
+            var deletedFileCount = DeleteLocalFiles(
+                linkedJobs.Select(item => item.S3Key).Concat(new[] { job.FacebookPostUrl?.S3Key }));
+
             await _context.SaveChangesAsync(cancellationToken);
 
-            return Ok(new { success = true, message = $"Deleted upload job #{id}." });
+            return Ok(new
+            {
+                success = true,
+                message = $"Permanently deleted upload job #{id}, its source database record, and {deletedFileCount} local video file(s)."
+            });
+        }
+
+        [HttpDelete("page/{userId}/{pageId}")]
+        public async Task<IActionResult> DeletePageVideos(
+            string userId,
+            string pageId,
+            [FromQuery] string? platform,
+            CancellationToken cancellationToken)
+        {
+            userId = userId.Trim();
+            pageId = pageId.Trim();
+            var normalizedPlatform = NormalizeSourcePlatform(platform);
+
+            if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(pageId))
+            {
+                return BadRequest(new { success = false, message = "User ID and Facebook Page are required." });
+            }
+
+            if (string.IsNullOrWhiteSpace(normalizedPlatform))
+            {
+                return BadRequest(new { success = false, message = "Select a valid source platform before deleting videos." });
+            }
+
+            var posts = await _context.FacebookPostUrls
+                .Where(post => post.UserId == userId
+                    && post.PageId == pageId
+                    && post.Platform == normalizedPlatform)
+                .ToListAsync(cancellationToken);
+
+            var postIds = posts.Select(post => post.Id).ToList();
+            var linkedJobs = postIds.Count == 0
+                ? new List<FacebookReelUploadJob>()
+                : await _context.FacebookReelUploadJobs
+                    .Where(job => job.UserId == userId
+                        && job.PageId == pageId
+                        && job.FacebookPostUrlId.HasValue
+                        && postIds.Contains(job.FacebookPostUrlId.Value))
+                    .ToListAsync(cancellationToken);
+
+            if (posts.Count == 0 && linkedJobs.Count == 0)
+            {
+                return Ok(new
+                {
+                    success = true,
+                    message = $"No {normalizedPlatform} videos were found to delete.",
+                    deletedPostCount = 0,
+                    deletedJobCount = 0,
+                    deletedFileCount = 0
+                });
+            }
+
+            var deletedFileCount = DeleteLocalFiles(posts.Select(post => post.S3Key).Concat(linkedJobs.Select(job => job.S3Key)));
+
+            _context.FacebookReelUploadJobs.RemoveRange(linkedJobs);
+            _context.FacebookPostUrls.RemoveRange(posts);
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = $"Deleted {posts.Count} {normalizedPlatform} video(s), {linkedJobs.Count} queued job(s), and {deletedFileCount} local file(s).",
+                deletedPostCount = posts.Count,
+                deletedJobCount = linkedJobs.Count,
+                deletedFileCount
+            });
         }
 
         [HttpPost("{id}/pause")]
@@ -220,6 +314,25 @@ namespace Smapi.API.Controllers
                     }
 
                     return BadRequest(new { success = false, message = $"Only locally downloaded {request.Platform} videos can be queued for publishing." });
+                }
+
+                var existingJob = await _context.FacebookReelUploadJobs
+                    .AsNoTracking()
+                    .Where(job => job.UserId == request.UserId
+                        && job.PageId == request.PageId
+                        && job.FacebookPostUrlId == scrapedPost.Id
+                        && job.Status != FacebookReelUploadJobStatus.Failed)
+                    .OrderByDescending(job => job.UpdatedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (existingJob is not null)
+                {
+                    return Conflict(new
+                    {
+                        success = false,
+                        message = $"This {request.Platform} video already has upload job #{existingJob.Id}. Delete it first before queueing the same video again.",
+                        job = ToResponse(existingJob)
+                    });
                 }
             }
 
@@ -356,9 +469,22 @@ namespace Smapi.API.Controllers
                     .OrderByDescending(job => job.CreatedAt)
                     .ToListAsync(cancellationToken);
 
+            var duplicateExistingJobs = new List<FacebookReelUploadJob>();
             var existingJobsByPostId = existingJobs
                 .GroupBy(job => job.FacebookPostUrlId!.Value)
-                .ToDictionary(group => group.Key, group => group.First());
+                .ToDictionary(
+                    group => group.Key,
+                    group =>
+                    {
+                        var primaryJob = group
+                            .OrderByDescending(job => job.Status == FacebookReelUploadJobStatus.Published)
+                            .ThenByDescending(job => job.Status == FacebookReelUploadJobStatus.Queued)
+                            .ThenByDescending(job => job.UpdatedAt)
+                            .First();
+
+                        duplicateExistingJobs.AddRange(group.Where(job => job.Id != primaryJob.Id));
+                        return primaryJob;
+                    });
 
             var jobs = new List<FacebookReelUploadJob>();
             var rescheduledJobs = new List<FacebookReelUploadJob>();
@@ -425,12 +551,17 @@ namespace Smapi.API.Controllers
                 });
             }
 
+            if (duplicateExistingJobs.Count > 0)
+            {
+                _context.FacebookReelUploadJobs.RemoveRange(duplicateExistingJobs);
+            }
+
             if (jobs.Count > 0)
             {
                 _context.FacebookReelUploadJobs.AddRange(jobs);
             }
 
-            if (jobs.Count > 0 || rescheduledJobs.Count > 0)
+            if (jobs.Count > 0 || rescheduledJobs.Count > 0 || duplicateExistingJobs.Count > 0)
             {
                 await _context.SaveChangesAsync(cancellationToken);
 
@@ -456,15 +587,15 @@ namespace Smapi.API.Controllers
                 Success = true,
                 MatchedCount = matchedPosts.Count,
                 QueuedCount = affectedJobs.Count,
-                SkippedCount = skippedCount + missingLocalFileCount,
+                SkippedCount = skippedCount + missingLocalFileCount + duplicateExistingJobs.Count,
                 IntervalHours = interval.TotalHours,
                 Jobs = affectedJobs
                     .OrderBy(job => job.ScheduledFor ?? job.CreatedAt)
                     .Select(ToResponse)
                     .ToList(),
                 Message = affectedJobs.Count == 0
-                    ? $"No new {request.Platform} videos were queued. Matched {matchedPosts.Count}, skipped {skippedCount + missingLocalFileCount}."
-                    : $"{(request.IncludeQueued ? "Queued/rescheduled" : "Queued")} {affectedJobs.Count} {request.Platform} video(s) using {request.DailyPostCount} daily time slot(s). Skipped {skippedCount + missingLocalFileCount}."
+                    ? $"No new {request.Platform} videos were queued. Matched {matchedPosts.Count}, skipped {skippedCount + missingLocalFileCount}; cleaned {duplicateExistingJobs.Count} duplicate job(s)."
+                    : $"{(request.IncludeQueued ? "Queued/rescheduled" : "Queued")} {affectedJobs.Count} {request.Platform} video(s) using {request.DailyPostCount} daily time slot(s). Skipped {skippedCount + missingLocalFileCount}; cleaned {duplicateExistingJobs.Count} duplicate job(s)."
             });
         }
 
@@ -638,6 +769,35 @@ namespace Smapi.API.Controllers
             post.S3Key = null;
             post.S3UploadedAt = null;
             post.S3UploadError = "Local video file is missing. Download it again.";
+        }
+
+        private int DeleteLocalFiles(IEnumerable<string?> storageKeys)
+        {
+            var deletedCount = 0;
+            foreach (var storageKey in storageKeys
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var localPath = _storage.GetAbsolutePath(storageKey);
+                    if (!System.IO.File.Exists(localPath))
+                    {
+                        _logger.LogWarning("Local video file was not found for storage key {StorageKey} at {LocalPath}.", storageKey, localPath);
+                        continue;
+                    }
+
+                    System.IO.File.Delete(localPath);
+                    deletedCount++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to delete local video file for storage key {StorageKey}.", storageKey);
+                }
+            }
+
+            return deletedCount;
         }
 
         private static DateTime NormalizeUtc(DateTime value)
