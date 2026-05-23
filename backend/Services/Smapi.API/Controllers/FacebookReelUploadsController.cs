@@ -87,6 +87,87 @@ namespace Smapi.API.Controllers
             return Ok(new { success = true, message = "Job has been queued for re-upload." });
         }
 
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteJob(int id, CancellationToken cancellationToken)
+        {
+            var job = await _context.FacebookReelUploadJobs.FindAsync(new object[] { id }, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(new { success = false, message = "Upload job not found." });
+            }
+
+            _context.FacebookReelUploadJobs.Remove(job);
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new { success = true, message = $"Deleted upload job #{id}." });
+        }
+
+        [HttpPost("{id}/pause")]
+        public async Task<IActionResult> PauseJob(int id, CancellationToken cancellationToken)
+        {
+            var job = await _context.FacebookReelUploadJobs.FindAsync(new object[] { id }, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(new { success = false, message = "Upload job not found." });
+            }
+
+            if (job.Status != FacebookReelUploadJobStatus.Queued)
+            {
+                return BadRequest(new { success = false, message = "Only queued jobs can be paused." });
+            }
+
+            job.Status = FacebookReelUploadJobStatus.Paused;
+            job.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = $"Paused upload job #{job.Id}.",
+                job = ToResponse(job)
+            });
+        }
+
+        [HttpPost("{id}/resume")]
+        public async Task<IActionResult> ResumeJob(
+            int id,
+            [FromBody] ResumeFacebookReelUploadJobRequest request,
+            CancellationToken cancellationToken)
+        {
+            var job = await _context.FacebookReelUploadJobs.FindAsync(new object[] { id }, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(new { success = false, message = "Upload job not found." });
+            }
+
+            if (job.Status != FacebookReelUploadJobStatus.Paused)
+            {
+                return BadRequest(new { success = false, message = "Only paused jobs can be started again." });
+            }
+
+            var scheduledFor = NormalizeUtc(request.ScheduledFor);
+            if (scheduledFor < DateTime.UtcNow.AddMinutes(-1))
+            {
+                return BadRequest(new { success = false, message = "Select a future publish time before starting this job." });
+            }
+
+            job.Status = FacebookReelUploadJobStatus.Queued;
+            job.ScheduledFor = scheduledFor;
+            job.GraphApiVersion = NormalizeGraphApiVersion(request.GraphApiVersion);
+            job.ErrorMessage = null;
+            job.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = $"Started upload job #{job.Id} for {job.ScheduledFor.Value.ToLocalTime():g}.",
+                job = ToResponse(job)
+            });
+        }
+
         [HttpPost]
         public async Task<ActionResult<FacebookReelUploadJobResponse>> CreateJob(
             [FromBody] CreateFacebookReelUploadJobRequest request,
@@ -192,8 +273,8 @@ namespace Smapi.API.Controllers
             request.GraphApiVersion = NormalizeGraphApiVersion(request.GraphApiVersion);
             request.Platform = NormalizeSourcePlatform(request.Platform) ?? SocialPostPlatform.Facebook;
 
-            _logger.LogInformation("CreateBatch request received. UserId: {UserId}, PageId: {PageId}, Platform: {Platform}, DailyPostCount: {DailyPostCount}, StartAt: {StartAt}", 
-                request.UserId, request.PageId, request.Platform, request.DailyPostCount, request.StartAt);
+            _logger.LogInformation("CreateBatch request received. UserId: {UserId}, PageId: {PageId}, Platform: {Platform}, DailyPostCount: {DailyPostCount}, StartAt: {StartAt}, IncludeQueued: {IncludeQueued}",
+                request.UserId, request.PageId, request.Platform, request.DailyPostCount, request.StartAt, request.IncludeQueued);
 
             if (string.IsNullOrWhiteSpace(request.UserId)
                 || string.IsNullOrWhiteSpace(request.PageId))
@@ -205,11 +286,17 @@ namespace Smapi.API.Controllers
             request.DailyPostCount = Math.Clamp(request.DailyPostCount, 1, 48);
             var startAt = NormalizeUtc(request.StartAt ?? DateTime.UtcNow);
             var interval = TimeSpan.FromHours(24d / request.DailyPostCount);
+            var dailyTimes = ParseDailyTimes(request.DailyTimes);
 
             if (interval < TimeSpan.FromMinutes(5))
             {
                 _logger.LogWarning("CreateBatch: Interval {Interval} is too short.", interval);
                 return BadRequest(new { success = false, message = "Daily post count is too high for a safe publishing interval." });
+            }
+
+            if (dailyTimes.Count > 0 && dailyTimes.Count != request.DailyPostCount)
+            {
+                return BadRequest(new { success = false, message = $"Enter exactly {request.DailyPostCount} daily publish time(s)." });
             }
 
             var page = await _context.FacebookPages
@@ -258,24 +345,45 @@ namespace Smapi.API.Controllers
             matchedPosts = availablePosts;
 
             var matchedPostIds = matchedPosts.Select(post => post.Id).ToList();
-            var alreadyQueuedPostIds = matchedPostIds.Count == 0
-                ? new HashSet<int>()
+            var existingJobs = matchedPostIds.Count == 0
+                ? new List<FacebookReelUploadJob>()
                 : await _context.FacebookReelUploadJobs
                     .Where(job => job.UserId == request.UserId
                         && job.PageId == request.PageId
                         && job.FacebookPostUrlId.HasValue
                         && matchedPostIds.Contains(job.FacebookPostUrlId.Value)
                         && job.Status != FacebookReelUploadJobStatus.Failed)
-                    .Select(job => job.FacebookPostUrlId!.Value)
-                    .ToHashSetAsync(cancellationToken);
+                    .OrderByDescending(job => job.CreatedAt)
+                    .ToListAsync(cancellationToken);
+
+            var existingJobsByPostId = existingJobs
+                .GroupBy(job => job.FacebookPostUrlId!.Value)
+                .ToDictionary(group => group.Key, group => group.First());
 
             var jobs = new List<FacebookReelUploadJob>();
+            var rescheduledJobs = new List<FacebookReelUploadJob>();
             var skippedCount = 0;
             var scheduleIndex = 0;
             foreach (var post in matchedPosts)
             {
-                if (alreadyQueuedPostIds.Contains(post.Id))
+                if (existingJobsByPostId.TryGetValue(post.Id, out var existingJob))
                 {
+                    if (request.IncludeQueued && existingJob.Status == FacebookReelUploadJobStatus.Queued)
+                    {
+                        existingJob.ScheduledFor = BuildScheduledFor(
+                            startAt,
+                            interval,
+                            scheduleIndex,
+                            dailyTimes,
+                            request.TimezoneOffsetMinutes);
+                        existingJob.GraphApiVersion = request.GraphApiVersion;
+                        existingJob.ErrorMessage = null;
+                        existingJob.UpdatedAt = DateTime.UtcNow;
+                        rescheduledJobs.Add(existingJob);
+                        scheduleIndex++;
+                        continue;
+                    }
+
                     skippedCount++;
                     continue;
                 }
@@ -289,7 +397,12 @@ namespace Smapi.API.Controllers
                     continue;
                 }
 
-                var scheduledFor = startAt.AddTicks(interval.Ticks * scheduleIndex);
+                var scheduledFor = BuildScheduledFor(
+                    startAt,
+                    interval,
+                    scheduleIndex,
+                    dailyTimes,
+                    request.TimezoneOffsetMinutes);
                 scheduleIndex++;
 
                 jobs.Add(new FacebookReelUploadJob
@@ -315,6 +428,10 @@ namespace Smapi.API.Controllers
             if (jobs.Count > 0)
             {
                 _context.FacebookReelUploadJobs.AddRange(jobs);
+            }
+
+            if (jobs.Count > 0 || rescheduledJobs.Count > 0)
+            {
                 await _context.SaveChangesAsync(cancellationToken);
 
                 foreach (var job in jobs)
@@ -332,17 +449,22 @@ namespace Smapi.API.Controllers
                 }
             }
 
+            var affectedJobs = jobs.Concat(rescheduledJobs).ToList();
+
             return Accepted(new FacebookReelUploadBatchResponse
             {
                 Success = true,
                 MatchedCount = matchedPosts.Count,
-                QueuedCount = jobs.Count,
+                QueuedCount = affectedJobs.Count,
                 SkippedCount = skippedCount + missingLocalFileCount,
                 IntervalHours = interval.TotalHours,
-                Jobs = jobs.Select(ToResponse).ToList(),
-                Message = jobs.Count == 0
+                Jobs = affectedJobs
+                    .OrderBy(job => job.ScheduledFor ?? job.CreatedAt)
+                    .Select(ToResponse)
+                    .ToList(),
+                Message = affectedJobs.Count == 0
                     ? $"No new {request.Platform} videos were queued. Matched {matchedPosts.Count}, skipped {skippedCount + missingLocalFileCount}."
-                    : $"Queued {jobs.Count} {request.Platform} video(s) at every {interval.TotalHours:0.##} hour(s). Skipped {skippedCount + missingLocalFileCount}."
+                    : $"{(request.IncludeQueued ? "Queued/rescheduled" : "Queued")} {affectedJobs.Count} {request.Platform} video(s) using {request.DailyPostCount} daily time slot(s). Skipped {skippedCount + missingLocalFileCount}."
             });
         }
 
@@ -411,6 +533,82 @@ namespace Smapi.API.Controllers
             }
 
             return null;
+        }
+
+        private static DateTime BuildScheduledFor(
+            DateTime startAtUtc,
+            TimeSpan fallbackInterval,
+            int scheduleIndex,
+            IReadOnlyList<TimeSpan> dailyTimes,
+            int timezoneOffsetMinutes)
+        {
+            if (dailyTimes.Count == 0)
+            {
+                return startAtUtc.AddTicks(fallbackInterval.Ticks * scheduleIndex);
+            }
+
+            var localStartAt = startAtUtc.AddMinutes(-timezoneOffsetMinutes);
+            var scheduledLocal = GetDailySlot(localStartAt, dailyTimes, scheduleIndex);
+
+            return DateTime.SpecifyKind(scheduledLocal.AddMinutes(timezoneOffsetMinutes), DateTimeKind.Utc);
+        }
+
+        private static DateTime GetDailySlot(DateTime localStartAt, IReadOnlyList<TimeSpan> dailyTimes, int scheduleIndex)
+        {
+            var remaining = scheduleIndex;
+            var currentDate = localStartAt.Date;
+
+            while (true)
+            {
+                foreach (var dailyTime in dailyTimes)
+                {
+                    var candidate = currentDate.Add(dailyTime);
+                    if (candidate < localStartAt)
+                    {
+                        continue;
+                    }
+
+                    if (remaining == 0)
+                    {
+                        return candidate;
+                    }
+
+                    remaining--;
+                }
+
+                currentDate = currentDate.AddDays(1);
+            }
+        }
+
+        private static List<TimeSpan> ParseDailyTimes(IEnumerable<string>? values)
+        {
+            if (values is null)
+            {
+                return new List<TimeSpan>();
+            }
+
+            var parsedTimes = new List<TimeSpan>();
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (!TimeSpan.TryParse(value.Trim(), out var parsedTime)
+                    || parsedTime < TimeSpan.Zero
+                    || parsedTime >= TimeSpan.FromDays(1))
+                {
+                    continue;
+                }
+
+                parsedTimes.Add(new TimeSpan(parsedTime.Hours, parsedTime.Minutes, 0));
+            }
+
+            return parsedTimes
+                .Distinct()
+                .OrderBy(time => time)
+                .ToList();
         }
 
         private bool HasExistingLocalDownload(FacebookPostUrl post)

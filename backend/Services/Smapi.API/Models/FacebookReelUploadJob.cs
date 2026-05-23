@@ -11,6 +11,7 @@ namespace Smapi.API.Models
         public const string StoredInS3 = "StoredInS3";
         public const string Publishing = "Publishing";
         public const string Published = "Published";
+        public const string Paused = "Paused";
         public const string Failed = "Failed";
     }
 

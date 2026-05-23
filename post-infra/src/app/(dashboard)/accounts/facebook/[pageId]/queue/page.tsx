@@ -51,6 +51,8 @@ interface UploadJob {
 }
 
 type SourcePlatform = "Facebook" | "TikTok" | "RedNote";
+const DEFAULT_DAILY_POST_COUNT = 6;
+const JOB_POLL_INTERVAL_MS = 30000;
 
 export default function QueuePage() {
   const params = useParams<{ pageId: string }>();
@@ -64,11 +66,17 @@ export default function QueuePage() {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [sourcePlatform, setSourcePlatform] = useState<SourcePlatform>("Facebook");
   const [pageForm, setPageForm] = useState({ pageId: routePageId, accessToken: "" });
-  const [scheduleForm, setScheduleForm] = useState({ dailyPostCount: "6", startAt: getDefaultStartAt() });
+  const [scheduleForm, setScheduleForm] = useState(() => ({ dailyPostCount: String(DEFAULT_DAILY_POST_COUNT), startAt: getDefaultStartAt() }));
+  const [dailyTimes, setDailyTimes] = useState(() => getDefaultDailyTimes(DEFAULT_DAILY_POST_COUNT, getDefaultStartAt()));
+  const [includeQueued, setIncludeQueued] = useState(false);
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingPage, setIsSavingPage] = useState(false);
+  const [deletingJobId, setDeletingJobId] = useState<number | null>(null);
+  const [pausingJobId, setPausingJobId] = useState<number | null>(null);
+  const [startingJobId, setStartingJobId] = useState<number | null>(null);
+  const [jobTimeEdits, setJobTimeEdits] = useState<Record<number, string>>({});
   const [publishForm, setPublishForm] = useState({
     graphApiVersion: "v24.0"
   });
@@ -82,11 +90,8 @@ export default function QueuePage() {
   );
 
   const visibleJobs = useMemo(() => {
-    if (!routePageId) {
-      return jobs;
-    }
-
-    return jobs.filter((job) => job.pageId === routePageId);
+    const pageJobs = routePageId ? jobs.filter((job) => job.pageId === routePageId) : jobs;
+    return [...pageJobs].sort((first, second) => compareSchedule(first, second));
   }, [jobs, routePageId]);
   const activeJobPostIds = useMemo(
     () => new Set(visibleJobs
@@ -98,10 +103,16 @@ export default function QueuePage() {
     () => posts.filter((post) => !activeJobPostIds.has(post.id)),
     [activeJobPostIds, posts]
   );
-  const intervalHours = useMemo(() => {
-    const dailyPostCount = Number(scheduleForm.dailyPostCount);
-    return Number.isFinite(dailyPostCount) && dailyPostCount > 0 ? 24 / dailyPostCount : 0;
-  }, [scheduleForm.dailyPostCount]);
+  const downloadedPostIds = useMemo(() => new Set(posts.map((post) => post.id)), [posts]);
+  const reschedulableQueuedJobs = useMemo(
+    () => visibleJobs.filter((job) => job.status === "Queued" && job.facebookPostUrlId && downloadedPostIds.has(job.facebookPostUrlId)),
+    [downloadedPostIds, visibleJobs]
+  );
+  const queueActionCount = queueablePosts.length + (includeQueued ? reschedulableQueuedJobs.length : 0);
+  const schedulePreview = useMemo(
+    () => dailyTimes.map((time) => formatTimeLabel(time)).join(", "),
+    [dailyTimes]
+  );
 
   const loadData = useCallback(async (nextUserId = userId) => {
     if (!nextUserId.trim()) {
@@ -180,8 +191,12 @@ export default function QueuePage() {
     }
 
     const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
       void loadJobs(userId);
-    }, 5000);
+    }, JOB_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
   }, [loadJobs, userId]);
@@ -225,6 +240,32 @@ export default function QueuePage() {
     void loadData(userId);
   }, [loadData, sourcePlatform, userId]);
 
+  const getSchedulePayload = () => {
+    const dailyPostCount = Number(scheduleForm.dailyPostCount);
+    if (!Number.isInteger(dailyPostCount) || dailyPostCount < 1 || dailyPostCount > 48) {
+      setMessage("Enter a daily post count between 1 and 48.");
+      return null;
+    }
+
+    if (dailyTimes.length !== dailyPostCount || dailyTimes.some((time) => !isValidDailyTime(time))) {
+      setMessage(`Set exactly ${dailyPostCount} valid daily publish time(s).`);
+      return null;
+    }
+
+    const startAt = new Date(scheduleForm.startAt);
+    if (Number.isNaN(startAt.getTime())) {
+      setMessage("Select a valid schedule start date/time.");
+      return null;
+    }
+
+    return {
+      dailyPostCount,
+      startAt: startAt.toISOString(),
+      dailyTimes,
+      timezoneOffsetMinutes: new Date().getTimezoneOffset()
+    };
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setMessage("");
@@ -234,20 +275,15 @@ export default function QueuePage() {
       return;
     }
 
-    const dailyPostCount = Number(scheduleForm.dailyPostCount);
-    if (!Number.isInteger(dailyPostCount) || dailyPostCount < 1 || dailyPostCount > 48) {
-      setMessage("Enter a daily post count between 1 and 48.");
+    const schedulePayload = getSchedulePayload();
+    if (!schedulePayload) {
       return;
     }
 
-    const startAt = new Date(scheduleForm.startAt);
-    if (Number.isNaN(startAt.getTime())) {
-      setMessage("Select a valid schedule start date/time.");
-      return;
-    }
-
-    if (queueablePosts.length === 0) {
-      setMessage(`No locally downloaded ${sourcePlatform} videos are available to queue. Download videos from the scraper page first.`);
+    if (queueActionCount === 0) {
+      setMessage(includeQueued
+        ? `No new or queued ${sourcePlatform} videos are available for this schedule.`
+        : `No new locally downloaded ${sourcePlatform} videos are available to queue. Enable reschedule to update existing queued jobs.`);
       return;
     }
 
@@ -261,8 +297,8 @@ export default function QueuePage() {
           userId: userId.trim(),
           pageId: routePageId,
           platform: sourcePlatform,
-          dailyPostCount,
-          startAt: startAt.toISOString(),
+          ...schedulePayload,
+          includeQueued,
           graphApiVersion: publishForm.graphApiVersion.trim() || "v24.0"
         })
       });
@@ -372,6 +408,121 @@ export default function QueuePage() {
     }
   };
 
+  const handleDeleteJob = async (jobId: number) => {
+    const shouldDelete = window.confirm(`Delete upload job #${jobId}?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setMessage("");
+    setDeletingJobId(jobId);
+
+    try {
+      const response = await fetch(`/api/smapi/FacebookReelUploads/${jobId}`, {
+        method: "DELETE"
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Delete failed with status ${response.status}.`);
+        return;
+      }
+
+      setJobs((previousJobs) => previousJobs.filter((job) => job.id !== jobId));
+      setMessage(data.message || `Deleted upload job #${jobId}.`);
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setDeletingJobId(null);
+    }
+  };
+
+  const handlePauseJob = async (jobId: number) => {
+    setMessage("");
+    setPausingJobId(jobId);
+
+    try {
+      const response = await fetch(`/api/smapi/FacebookReelUploads/${jobId}/pause`, {
+        method: "POST"
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Pause failed with status ${response.status}.`);
+        return;
+      }
+
+      if (data.job) {
+        setJobs((previousJobs) => previousJobs.map((job) => job.id === jobId ? data.job : job));
+        setJobTimeEdits((previous) => ({
+          ...previous,
+          [jobId]: toDateTimeLocalValue(data.job.scheduledFor)
+        }));
+      }
+
+      setMessage(data.message || `Paused upload job #${jobId}.`);
+      await loadJobs(userId);
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setPausingJobId(null);
+    }
+  };
+
+  const handleStartJob = async (jobId: number, fallbackScheduledFor?: string) => {
+    setMessage("");
+
+    const scheduledForValue = jobTimeEdits[jobId] || toDateTimeLocalValue(fallbackScheduledFor);
+    const scheduledFor = new Date(scheduledForValue);
+    if (Number.isNaN(scheduledFor.getTime())) {
+      setMessage("Select a valid publish time before starting this job.");
+      return;
+    }
+
+    setStartingJobId(jobId);
+
+    try {
+      const response = await fetch(`/api/smapi/FacebookReelUploads/${jobId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scheduledFor: scheduledFor.toISOString(),
+          graphApiVersion: publishForm.graphApiVersion.trim() || "v24.0"
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Start failed with status ${response.status}.`);
+        return;
+      }
+
+      if (data.job) {
+        setJobs((previousJobs) => previousJobs.map((job) => job.id === jobId ? data.job : job));
+      }
+
+      setMessage(data.message || `Started upload job #${jobId}.`);
+      await loadJobs(userId);
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setStartingJobId(null);
+    }
+  };
+
+  const handleDailyPostCountChange = (value: string) => {
+    setScheduleForm((current) => ({ ...current, dailyPostCount: value }));
+
+    const nextCount = Number(value);
+    if (Number.isInteger(nextCount) && nextCount >= 1 && nextCount <= 48) {
+      setDailyTimes((currentTimes) => resizeDailyTimes(currentTimes, nextCount, scheduleForm.startAt));
+    }
+  };
+
+  const handleDailyTimeChange = (index: number, value: string) => {
+    setDailyTimes((currentTimes) => currentTimes.map((time, currentIndex) => currentIndex === index ? value : time));
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
       <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -476,7 +627,7 @@ export default function QueuePage() {
             )}
           </button>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-2">
             <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3">
               <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Downloaded {sourcePlatform}</p>
               <p className="mt-1 text-2xl font-bold text-white">{posts.length}</p>
@@ -486,8 +637,12 @@ export default function QueuePage() {
               <p className="mt-1 text-2xl font-bold text-blue-300">{queueablePosts.length}</p>
             </div>
             <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3">
-              <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Interval</p>
-              <p className="mt-1 text-2xl font-bold text-emerald-300">{formatInterval(intervalHours)}</p>
+              <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Queued To Reschedule</p>
+              <p className="mt-1 text-2xl font-bold text-amber-300">{reschedulableQueuedJobs.length}</p>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Daily Slots</p>
+              <p className="mt-1 text-2xl font-bold text-emerald-300">{dailyTimes.length}</p>
             </div>
           </div>
         </section>
@@ -495,7 +650,7 @@ export default function QueuePage() {
         <section className="glass-panel p-6 rounded-xl border border-white/5 space-y-5">
           <div>
             <h2 className="text-xl font-bold text-white">Daily Schedule</h2>
-            <p className="text-neutral-500 text-sm mt-1">Queue only downloaded {sourcePlatform} videos. The queue spaces Facebook publishing evenly across 24 hours.</p>
+            <p className="text-neutral-500 text-sm mt-1">Queue only downloaded {sourcePlatform} videos at the selected daily publish times.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -507,10 +662,10 @@ export default function QueuePage() {
                 max="48"
                 type="number"
                 value={scheduleForm.dailyPostCount}
-                onChange={(event) => setScheduleForm({ ...scheduleForm, dailyPostCount: event.target.value })}
+                onChange={(event) => handleDailyPostCountChange(event.target.value)}
                 className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none"
               />
-              <span className="block text-xs text-neutral-500">Example: 6 posts per day means one reel every 4 hours.</span>
+              <span className="block text-xs text-neutral-500">This creates the same number of publish time slots below.</span>
             </label>
             <label className="space-y-2">
               <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">Start At</span>
@@ -524,13 +679,50 @@ export default function QueuePage() {
             </label>
           </div>
 
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400">Daily Publish Times</span>
+              <span className="text-[10px] uppercase tracking-widest text-neutral-500">{dailyTimes.length} slots</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {dailyTimes.map((time, index) => (
+                <label key={`${index}-${dailyTimes.length}`} className="space-y-1">
+                  <span className="text-[10px] uppercase tracking-widest text-neutral-500 font-bold">Time {index + 1}</span>
+                  <input
+                    required
+                    type="time"
+                    value={time}
+                    onChange={(event) => handleDailyTimeChange(index, event.target.value)}
+                    className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-3 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  />
+                </label>
+              ))}
+            </div>
+            {schedulePreview && (
+              <p className="text-xs text-neutral-500">Schedule slots: {schedulePreview}</p>
+            )}
+          </div>
+
           <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-4 text-sm text-neutral-300">
             This page uses the already downloaded video files from the scraper page and publishes them with their saved captions. It does not download videos again.
           </div>
 
+          <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-black/30 px-4 py-4 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={includeQueued}
+              onChange={(event) => setIncludeQueued(event.target.checked)}
+              className="mt-1 h-4 w-4 accent-blue-500"
+            />
+            <span>
+              <span className="block font-bold text-white">Reschedule already queued jobs into this schedule</span>
+              <span className="block text-xs text-neutral-500">Existing queued jobs will be rescheduled from Start At using the selected daily publish times.</span>
+            </span>
+          </label>
+
           <button
             type="submit"
-            disabled={isSubmitting || queueablePosts.length === 0}
+            disabled={isSubmitting || queueActionCount === 0}
             className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition-all flex items-center justify-center gap-3 disabled:opacity-50 shadow-lg shadow-blue-600/20"
           >
             {isSubmitting ? (
@@ -541,7 +733,7 @@ export default function QueuePage() {
             ) : (
                 <>
                   <span className="material-symbols-outlined text-sm">publish</span>
-                Queue {queueablePosts.length} Downloaded {sourcePlatform} Video{queueablePosts.length === 1 ? "" : "s"}
+                {includeQueued ? "Reschedule" : "Queue"} {queueActionCount} {sourcePlatform} Video{queueActionCount === 1 ? "" : "s"}
                 </>
             )}
           </button>
@@ -564,7 +756,7 @@ export default function QueuePage() {
         </div>
 
         <div className="rounded-lg border border-white/5 overflow-hidden">
-          <div className="hidden md:grid grid-cols-[72px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+          <div className="hidden md:grid grid-cols-[104px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Job</span>
             <span>Status</span>
             <span>Scheduled</span>
@@ -574,18 +766,58 @@ export default function QueuePage() {
             <span>Source</span>
           </div>
           {visibleJobs.length > 0 ? visibleJobs.map((job) => (
-            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[72px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
+            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-bold text-white">#{job.id}</span>
-                {job.status !== "Published" && (
+                {job.status === "Queued" && (
+                  <button
+                    type="button"
+                    onClick={() => handlePauseJob(job.id)}
+                    disabled={pausingJobId === job.id}
+                    className="text-[10px] text-amber-300 hover:text-amber-200 font-bold flex items-center gap-0.5 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[12px]">pause_circle</span>
+                    {pausingJobId === job.id ? "Pausing" : "Pause"}
+                  </button>
+                )}
+                {job.status === "Paused" && (
+                  <>
+                    <input
+                      type="datetime-local"
+                      value={jobTimeEdits[job.id] ?? toDateTimeLocalValue(job.scheduledFor)}
+                      onChange={(event) => setJobTimeEdits((previous) => ({ ...previous, [job.id]: event.target.value }))}
+                      className="mt-1 w-full rounded border border-white/10 bg-black/50 px-2 py-1 text-[10px] text-white focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleStartJob(job.id, job.scheduledFor)}
+                      disabled={startingJobId === job.id}
+                      className="text-[10px] text-emerald-300 hover:text-emerald-200 font-bold flex items-center gap-0.5 disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[12px]">play_circle</span>
+                      {startingJobId === job.id ? "Starting" : "Start"}
+                    </button>
+                  </>
+                )}
+                {job.status !== "Published" && job.status !== "Paused" && (
                   <button
                     onClick={() => handleRetryJob(job.id)}
+                    disabled={isSubmitting}
                     className="text-[10px] text-blue-400 hover:text-blue-300 font-bold flex items-center gap-0.5"
                   >
                     <span className="material-symbols-outlined text-[12px]">replay</span>
                     Retry
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => handleDeleteJob(job.id)}
+                  disabled={deletingJobId === job.id}
+                  className="text-[10px] text-red-300 hover:text-red-200 font-bold flex items-center gap-0.5 disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[12px]">delete</span>
+                  {deletingJobId === job.id ? "Deleting" : "Delete"}
+                </button>
               </div>
               <span className={`inline-flex w-fit items-center rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(job.status)}`}>
                 {job.status}
@@ -601,7 +833,11 @@ export default function QueuePage() {
                     Public URL required for Facebook upload
                   </p>
                 )}
-                {job.errorMessage && <p className="line-clamp-1 text-xs text-red-300">{job.errorMessage}</p>}
+                {job.errorMessage && (
+                  <p className="line-clamp-2 text-xs text-red-300" title={job.errorMessage}>
+                    {job.errorMessage}
+                  </p>
+                )}
               </div>
               <div className="min-w-0 text-xs text-neutral-500">
                 <a href={job.videoSourceUrl} target="_blank" rel="noreferrer" className="block truncate text-neutral-300 hover:text-white">
@@ -619,6 +855,21 @@ export default function QueuePage() {
   );
 }
 
+function compareSchedule(first: UploadJob, second: UploadJob) {
+  const firstTime = getSortTime(first.scheduledFor) ?? getSortTime(first.createdAt) ?? 0;
+  const secondTime = getSortTime(second.scheduledFor) ?? getSortTime(second.createdAt) ?? 0;
+  return firstTime - secondTime;
+}
+
+function getSortTime(value?: string) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
 function statusClass(status: string) {
   switch (status) {
     case "Published":
@@ -629,6 +880,8 @@ function statusClass(status: string) {
       return "bg-red-500/10 text-red-300 border border-red-500/20";
     case "Queued":
       return "bg-zinc-500/10 text-zinc-300 border border-zinc-500/20";
+    case "Paused":
+      return "bg-amber-500/10 text-amber-300 border border-amber-500/20";
     default:
       return "bg-blue-500/10 text-blue-300 border border-blue-500/20";
   }
@@ -647,20 +900,62 @@ function formatDateTime(value?: string) {
   return date.toLocaleString();
 }
 
-function formatInterval(hours: number) {
-  if (!Number.isFinite(hours) || hours <= 0) {
-    return "-";
+function toDateTimeLocalValue(value?: string) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return getDefaultStartAt();
   }
 
-  if (hours >= 1) {
-    return `${trimNumber(hours)}h`;
-  }
-
-  return `${Math.round(hours * 60)}m`;
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
 }
 
-function trimNumber(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+function resizeDailyTimes(currentTimes: string[], nextCount: number, startAt: string) {
+  const fallbackTimes = getDefaultDailyTimes(nextCount, startAt);
+
+  return Array.from({ length: nextCount }, (_, index) => currentTimes[index] || fallbackTimes[index] || "00:00");
+}
+
+function getDefaultDailyTimes(count: number, startAt: string) {
+  const safeCount = Math.max(1, Math.min(48, count));
+  const startMinutes = getStartMinutes(startAt);
+  const intervalMinutes = Math.floor((24 * 60) / safeCount);
+  const times = Array.from({ length: safeCount }, (_, index) => {
+    const minutes = (startMinutes + intervalMinutes * index) % (24 * 60);
+    return minutesToTimeValue(minutes);
+  });
+
+  return [...times].sort();
+}
+
+function getStartMinutes(startAt: string) {
+  const date = new Date(startAt);
+  if (Number.isNaN(date.getTime())) {
+    return 0;
+  }
+
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function minutesToTimeValue(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const minutePart = minutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutePart).padStart(2, "0")}`;
+}
+
+function isValidDailyTime(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function formatTimeLabel(value: string) {
+  if (!isValidDailyTime(value)) {
+    return value;
+  }
+
+  const [hoursText, minutesText] = value.split(":");
+  const date = new Date();
+  date.setHours(Number(hoursText), Number(minutesText), 0, 0);
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function isDownloadedPlatformVideo(post: ScrapedPost, sourcePlatform: SourcePlatform) {

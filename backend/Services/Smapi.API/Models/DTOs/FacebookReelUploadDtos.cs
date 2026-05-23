@@ -59,11 +59,25 @@ namespace Smapi.API.Models.DTOs
 
         public DateTime? StartAt { get; set; }
 
+        public List<string> DailyTimes { get; set; } = new();
+
+        public int TimezoneOffsetMinutes { get; set; }
+
+        public bool IncludeQueued { get; set; }
+
         [MaxLength(32)]
         public string? GraphApiVersion { get; set; } = "v24.0";
 
         [MaxLength(32)]
         public string Platform { get; set; } = "Facebook";
+    }
+
+    public class ResumeFacebookReelUploadJobRequest
+    {
+        public DateTime ScheduledFor { get; set; }
+
+        [MaxLength(32)]
+        public string? GraphApiVersion { get; set; } = "v24.0";
     }
 
     public class FacebookReelUploadBatchResponse
