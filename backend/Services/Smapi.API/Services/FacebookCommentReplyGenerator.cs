@@ -64,7 +64,11 @@ namespace Smapi.API.Services
                 generationConfig = new
                 {
                     temperature = 0.4,
-                    maxOutputTokens = 180
+                    maxOutputTokens = 100,
+                    thinkingConfig = new
+                    {
+                        thinkingBudget = 0
+                    }
                 }
             };
 
@@ -118,7 +122,10 @@ namespace Smapi.API.Services
             builder.AppendLine($"Comment: {context.Event.CommentText}");
             builder.AppendLine();
             builder.AppendLine("Write one Facebook comment reply only.");
-            builder.AppendLine("Keep it short, natural, and safe for public posting.");
+            builder.AppendLine("Reply in the same language as the comment: French for French comments and English for English comments.");
+            builder.AppendLine("Write exactly one complete, natural sentence of no more than 20 words.");
+            builder.AppendLine("Never stop mid-sentence and never end with an unfinished phrase.");
+            builder.AppendLine("Keep it safe for public posting.");
             builder.AppendLine("Do not include explanations, markdown, hashtags, or quotation marks unless the comment requires them.");
 
             return builder.ToString();
