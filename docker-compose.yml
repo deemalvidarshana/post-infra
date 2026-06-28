@@ -1,4 +1,21 @@
 services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: sm-caddy
+    environment:
+      - APP_DOMAIN=${APP_DOMAIN:-smautomate.duckdns.org}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    restart: always
+
   db:
     image: postgres:15-alpine
     container_name: smapi-db
@@ -9,7 +26,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     restart: always
 
   identity-api:
@@ -22,7 +39,7 @@ services:
     depends_on:
       - db
     ports:
-      - "5001:8080"
+      - "127.0.0.1:5001:8080"
     restart: always
 
   smapi-api:
@@ -38,7 +55,7 @@ services:
     depends_on:
       - db
     ports:
-      - "5002:8080"
+      - "127.0.0.1:5002:8080"
     restart: always
 
   reporting-api:
@@ -51,7 +68,7 @@ services:
     depends_on:
       - db
     ports:
-      - "5003:8080"
+      - "127.0.0.1:5003:8080"
     restart: always
 
   frontend:
@@ -61,11 +78,13 @@ services:
     environment:
       - NODE_ENV=production
       - SMAPI_BASE_URL=http://smapi-api:8080/api
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       - smapi-api
     restart: always
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

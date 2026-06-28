@@ -1,0 +1,11 @@
+{$APP_DOMAIN:smautomate.duckdns.org} {
+    encode zstd gzip
+
+    reverse_proxy frontend:3000
+
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
