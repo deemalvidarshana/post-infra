@@ -22,17 +22,24 @@ namespace Smapi.API.Services
     public class FacebookCommentReplyGenerator : IFacebookCommentReplyGenerator
     {
         private const string GlobalGeminiSettingUserId = "__global__";
+        private const int VideoFrameCount = 6;
         private readonly HttpClient _httpClient;
         private readonly SmapiDbContext _context;
+        private readonly IVideoFrameExtractor _frameExtractor;
+        private readonly ILocalVideoStorageService _storage;
         private readonly ILogger<FacebookCommentReplyGenerator> _logger;
 
         public FacebookCommentReplyGenerator(
             HttpClient httpClient,
             SmapiDbContext context,
+            IVideoFrameExtractor frameExtractor,
+            ILocalVideoStorageService storage,
             ILogger<FacebookCommentReplyGenerator> logger)
         {
             _httpClient = httpClient;
             _context = context;
+            _frameExtractor = frameExtractor;
+            _storage = storage;
             _logger = logger;
         }
 
@@ -48,6 +55,7 @@ namespace Smapi.API.Services
                 throw new InvalidOperationException("Gemini settings are not configured.");
             }
 
+            var parts = await BuildContentPartsAsync(context, cancellationToken);
             var payload = new
             {
                 contents = new[]
@@ -55,16 +63,13 @@ namespace Smapi.API.Services
                     new
                     {
                         role = "user",
-                        parts = new[]
-                        {
-                            new { text = BuildPrompt(context) }
-                        }
+                        parts
                     }
                 },
                 generationConfig = new
                 {
                     temperature = 0.4,
-                    maxOutputTokens = 180
+                    maxOutputTokens = 256
                 }
             };
 
@@ -106,7 +111,117 @@ namespace Smapi.API.Services
                     .FirstOrDefaultAsync(cancellationToken);
         }
 
-        private static string BuildPrompt(FacebookCommentReplyContext context)
+        private async Task<List<object>> BuildContentPartsAsync(
+            FacebookCommentReplyContext context,
+            CancellationToken cancellationToken)
+        {
+            var parts = new List<object>();
+            var postContext = await FindPostContextAsync(context, cancellationToken);
+            var frameDirectory = Path.Combine(
+                Path.GetTempPath(),
+                "smapi-comment-reply-frames",
+                context.Event.Id.ToString(),
+                Guid.NewGuid().ToString("N"));
+            var attachedFrameCount = 0;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(postContext.VideoPath)
+                    && File.Exists(postContext.VideoPath))
+                {
+                    var frames = await _frameExtractor.ExtractRandomFramesAsync(
+                        postContext.VideoPath,
+                        VideoFrameCount,
+                        frameDirectory,
+                        cancellationToken);
+
+                    foreach (var frame in frames.Take(VideoFrameCount))
+                    {
+                        var bytes = await File.ReadAllBytesAsync(frame.Path, cancellationToken);
+                        parts.Add(new
+                        {
+                            inline_data = new
+                            {
+                                mime_type = frame.MimeType,
+                                data = Convert.ToBase64String(bytes)
+                            }
+                        });
+                        attachedFrameCount += 1;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Could not extract video context for Facebook comment event {EventId}; using text context only.",
+                    context.Event.Id);
+            }
+            finally
+            {
+                TryDeleteDirectory(frameDirectory);
+            }
+
+            parts.Add(new { text = BuildPrompt(context, postContext, attachedFrameCount) });
+            return parts;
+        }
+
+        private async Task<FacebookCommentPostContext> FindPostContextAsync(
+            FacebookCommentReplyContext context,
+            CancellationToken cancellationToken)
+        {
+            var postId = context.Event.PostId?.Trim();
+            if (string.IsNullOrWhiteSpace(postId))
+            {
+                return new FacebookCommentPostContext(null, null, null);
+            }
+
+            var objectId = postId.Contains('_', StringComparison.Ordinal)
+                ? postId[(postId.LastIndexOf('_') + 1)..]
+                : postId;
+
+            var job = await _context.FacebookReelUploadJobs
+                .AsNoTracking()
+                .Include(item => item.FacebookPostUrl)
+                .Where(item => item.PageId == context.Page.PageId)
+                .Where(item => item.FacebookPostId == postId || item.FacebookPostId == objectId)
+                .OrderByDescending(item => item.CompletedAt ?? item.UpdatedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            string? videoPath = null;
+            if (!string.IsNullOrWhiteSpace(job?.S3Key))
+            {
+                try
+                {
+                    var candidatePath = _storage.GetAbsolutePath(job.S3Key);
+                    if (File.Exists(candidatePath))
+                    {
+                        videoPath = candidatePath;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Could not resolve stored video for Facebook comment event {EventId}.",
+                        context.Event.Id);
+                }
+            }
+
+            return new FacebookCommentPostContext(
+                CleanContextText(job?.Caption),
+                CleanContextText(job?.FacebookPostUrl?.Caption),
+                videoPath);
+        }
+
+        private static string BuildPrompt(
+            FacebookCommentReplyContext context,
+            FacebookCommentPostContext postContext,
+            int attachedFrameCount)
         {
             var builder = new StringBuilder();
             builder.AppendLine(context.Setting.Prompt.Trim());
@@ -116,12 +231,46 @@ namespace Smapi.API.Services
             builder.AppendLine($"Tone: {context.Setting.Tone}");
             builder.AppendLine($"Comment author: {context.Event.CommentAuthorName ?? "Unknown"}");
             builder.AppendLine($"Comment: {context.Event.CommentText}");
+
+            if (attachedFrameCount > 0)
+            {
+                builder.AppendLine($"Video context: {attachedFrameCount} frames from this exact Facebook video are attached.");
+                builder.AppendLine("Use the frames to understand the characters, situation, and emotional tone before replying.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(postContext.PublishedCaption))
+            {
+                builder.AppendLine($"Published post caption: {postContext.PublishedCaption}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(postContext.SourceCaption)
+                && !string.Equals(
+                    postContext.SourceCaption,
+                    postContext.PublishedCaption,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                builder.AppendLine($"Source video caption: {postContext.SourceCaption}");
+            }
+
             builder.AppendLine();
             builder.AppendLine("Write one Facebook comment reply only.");
             builder.AppendLine("Keep it short, natural, and safe for public posting.");
+            builder.AppendLine("Treat emoji-only comments as reactions to the post and its emotional tone, not automatically as a personal problem.");
+            builder.AppendLine("Return a complete reply; never end mid-sentence.");
             builder.AppendLine("Do not include explanations, markdown, hashtags, or quotation marks unless the comment requires them.");
 
             return builder.ToString();
+        }
+
+        private static string? CleanContextText(string? value)
+        {
+            value = value?.Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            return value.Length <= 1000 ? value : value[..1000].Trim();
         }
 
         private static string NormalizeModel(string model)
@@ -188,5 +337,25 @@ namespace Smapi.API.Services
             value = value.Trim();
             return value.Length <= 500 ? value : value[..500];
         }
+
+        private static void TryDeleteDirectory(string directory)
+        {
+            try
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch
+            {
+                // Temporary frame cleanup is best effort.
+            }
+        }
+
+        private sealed record FacebookCommentPostContext(
+            string? PublishedCaption,
+            string? SourceCaption,
+            string? VideoPath);
     }
 }
