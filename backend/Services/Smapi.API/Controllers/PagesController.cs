@@ -776,6 +776,12 @@ namespace Smapi.API.Controllers
             page.PageName = page.PageName.Trim();
             page.UserId = string.IsNullOrWhiteSpace(page.UserId) ? "user-123" : page.UserId.Trim();
 
+            var metaAppValidation = await ValidateMetaAppAsync(page.UserId, page.FacebookMetaAppId);
+            if (metaAppValidation is not null)
+            {
+                return metaAppValidation;
+            }
+
             var existingPage = await _context.FacebookPages.FirstOrDefaultAsync(
                 p => p.UserId == page.UserId && p.PageId == page.PageId);
             
@@ -785,6 +791,7 @@ namespace Smapi.API.Controllers
                 existingPage.PageName = page.PageName;
                 existingPage.Category = string.IsNullOrWhiteSpace(page.Category) ? null : page.Category.Trim();
                 existingPage.AvatarUrl = string.IsNullOrWhiteSpace(page.AvatarUrl) ? null : page.AvatarUrl.Trim();
+                existingPage.FacebookMetaAppId = page.FacebookMetaAppId;
                 existingPage.ConnectedAt = DateTime.UtcNow;
                 _context.FacebookPages.Update(existingPage);
             }
@@ -822,6 +829,12 @@ namespace Smapi.API.Controllers
             page.PageId = page.PageId.Trim();
             page.PageName = page.PageName.Trim();
 
+            var metaAppValidation = await ValidateMetaAppAsync(page.UserId, page.FacebookMetaAppId);
+            if (metaAppValidation is not null)
+            {
+                return metaAppValidation;
+            }
+
             var duplicateExists = await _context.FacebookPages.AnyAsync(
                 item => item.Id != id && item.UserId == page.UserId && item.PageId == page.PageId);
 
@@ -836,6 +849,7 @@ namespace Smapi.API.Controllers
             existingPage.AccessToken = page.AccessToken;
             existingPage.Category = string.IsNullOrWhiteSpace(page.Category) ? null : page.Category.Trim();
             existingPage.AvatarUrl = string.IsNullOrWhiteSpace(page.AvatarUrl) ? null : page.AvatarUrl.Trim();
+            existingPage.FacebookMetaAppId = page.FacebookMetaAppId;
             existingPage.ConnectedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
@@ -1185,6 +1199,22 @@ namespace Smapi.API.Controllers
             }
 
             return null;
+        }
+
+        private async Task<IActionResult?> ValidateMetaAppAsync(string userId, int? facebookMetaAppId)
+        {
+            if (!facebookMetaAppId.HasValue)
+            {
+                return null;
+            }
+
+            var exists = await _context.FacebookMetaApps
+                .AsNoTracking()
+                .AnyAsync(item => item.Id == facebookMetaAppId.Value && item.UserId == userId);
+
+            return exists
+                ? null
+                : BadRequest(new { success = false, message = "Selected Meta App was not found for this user." });
         }
 
         private int DeleteLocalFiles(IEnumerable<string?> storageKeys, string context)

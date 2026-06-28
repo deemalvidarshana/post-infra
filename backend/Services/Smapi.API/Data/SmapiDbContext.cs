@@ -10,8 +10,11 @@ namespace Smapi.API.Data
         }
 
         public DbSet<FacebookPage> FacebookPages { get; set; }
+        public DbSet<FacebookMetaApp> FacebookMetaApps { get; set; }
         public DbSet<FacebookPostUrl> FacebookPostUrls { get; set; }
         public DbSet<FacebookReelUploadJob> FacebookReelUploadJobs { get; set; }
+        public DbSet<FacebookAutoReplySetting> FacebookAutoReplySettings { get; set; }
+        public DbSet<FacebookCommentEvent> FacebookCommentEvents { get; set; }
         public DbSet<S3StorageSetting> S3StorageSettings { get; set; }
         public DbSet<ApifySetting> ApifySettings { get; set; }
         public DbSet<GeminiSetting> GeminiSettings { get; set; }
@@ -24,6 +27,16 @@ namespace Smapi.API.Data
             modelBuilder.Entity<FacebookPage>(entity =>
             {
                 entity.HasIndex(e => new { e.UserId, e.PageId }).IsUnique();
+                entity.HasOne(e => e.FacebookMetaApp)
+                    .WithMany()
+                    .HasForeignKey(e => e.FacebookMetaAppId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<FacebookMetaApp>(entity =>
+            {
+                entity.HasIndex(e => e.WebhookKey).IsUnique();
+                entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
             });
 
             modelBuilder.Entity<FacebookPostUrl>(entity =>
@@ -41,6 +54,18 @@ namespace Smapi.API.Data
                     .WithMany()
                     .HasForeignKey(e => e.FacebookPostUrlId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<FacebookAutoReplySetting>(entity =>
+            {
+                entity.HasIndex(e => new { e.UserId, e.PageId }).IsUnique();
+            });
+
+            modelBuilder.Entity<FacebookCommentEvent>(entity =>
+            {
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => new { e.UserId, e.PageId, e.ReceivedAt });
+                entity.HasIndex(e => new { e.PageId, e.CommentId }).IsUnique();
             });
 
             modelBuilder.Entity<S3StorageSetting>(entity =>

@@ -17,6 +17,10 @@ namespace Smapi.API.Models
         
         public string? Category { get; set; }
         public string? AvatarUrl { get; set; }
+
+        public int? FacebookMetaAppId { get; set; }
+
+        public FacebookMetaApp? FacebookMetaApp { get; set; }
         
         public DateTime ConnectedAt { get; set; } = DateTime.UtcNow;
         

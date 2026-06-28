@@ -34,8 +34,19 @@ builder.Services.AddHttpClient<IGeminiCaptionGenerator, GeminiCaptionGenerator>(
 {
     client.Timeout = TimeSpan.FromMinutes(2);
 });
+builder.Services.AddHttpClient<IFacebookCommentReplyGenerator, FacebookCommentReplyGenerator>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
+builder.Services.AddHttpClient<IFacebookCommentsPublisher, FacebookCommentsPublisher>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddScoped<IFacebookWebhookReceiver, FacebookWebhookReceiver>();
+builder.Services.AddScoped<IFacebookCommentReplyProcessor, FacebookCommentReplyProcessor>();
 builder.Services.AddHostedService<FacebookReelUploadWorker>();
 builder.Services.AddHostedService<FacebookPostS3UploadWorker>();
+builder.Services.AddHostedService<FacebookCommentReplyWorker>();
 
 // Database
 builder.Services.AddDbContext<SmapiDbContext>(options =>

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Smapi.API.Data;
@@ -11,9 +12,11 @@ using Smapi.API.Data;
 namespace Smapi.API.Migrations
 {
     [DbContext(typeof(SmapiDbContext))]
-    partial class SmapiDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260628063317_AddFacebookAutoReply")]
+    partial class AddFacebookAutoReply
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -217,67 +220,6 @@ namespace Smapi.API.Migrations
                     b.ToTable("FacebookCommentEvents");
                 });
 
-            modelBuilder.Entity("Smapi.API.Models.FacebookMetaApp", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AppId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("AppSecret")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("GraphApiVersion")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<bool>("IsDefault")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("VerifyToken")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("WebhookKey")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("WebhookKey")
-                        .IsUnique();
-
-                    b.HasIndex("UserId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("FacebookMetaApps");
-                });
-
             modelBuilder.Entity("Smapi.API.Models.FacebookPage", b =>
                 {
                     b.Property<int>("Id")
@@ -299,9 +241,6 @@ namespace Smapi.API.Migrations
                     b.Property<DateTime>("ConnectedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int?>("FacebookMetaAppId")
-                        .HasColumnType("integer");
-
                     b.Property<string>("PageId")
                         .IsRequired()
                         .HasColumnType("text");
@@ -315,8 +254,6 @@ namespace Smapi.API.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("FacebookMetaAppId");
 
                     b.HasIndex("UserId", "PageId")
                         .IsUnique();
@@ -663,16 +600,6 @@ namespace Smapi.API.Migrations
                         .IsUnique();
 
                     b.ToTable("S3StorageSettings");
-                });
-
-            modelBuilder.Entity("Smapi.API.Models.FacebookPage", b =>
-                {
-                    b.HasOne("Smapi.API.Models.FacebookMetaApp", "FacebookMetaApp")
-                        .WithMany()
-                        .HasForeignKey("FacebookMetaAppId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("FacebookMetaApp");
                 });
 
             modelBuilder.Entity("Smapi.API.Models.FacebookReelUploadJob", b =>

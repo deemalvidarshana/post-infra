@@ -11,6 +11,7 @@ interface FBPage {
   category: string;
   accessToken: string;
   avatar: string;
+  facebookMetaAppId?: number;
   status: 'connected';
 }
 
@@ -22,23 +23,39 @@ interface FacebookPageApi {
   category?: string;
   accessToken: string;
   avatarUrl?: string;
+  facebookMetaAppId?: number;
+}
+
+interface FacebookMetaAppApi {
+  id: number;
+  userId: string;
+  name: string;
+  appId?: string;
+  verifyToken: string;
+  webhookKey: string;
+  callbackPath: string;
+  graphApiVersion: string;
+  isDefault: boolean;
 }
 
 export default function FacebookAccountsPage() {
   const [userId, setUserId] = useState('');
   const [pages, setPages] = useState<FBPage[]>([]);
+  const [metaApps, setMetaApps] = useState<FacebookMetaAppApi[]>([]);
   const [message, setMessage] = useState('');
   const [modalMessage, setModalMessage] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [editingPage, setEditingPage] = useState<FBPage | null>(null);
+  const [subscribingPageId, setSubscribingPageId] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     pageId: '',
     category: '',
     avatarUrl: '',
-    accessToken: ''
+    accessToken: '',
+    facebookMetaAppId: ''
   });
 
   const hasLoadedStoredUser = useRef(false);
@@ -51,12 +68,24 @@ export default function FacebookAccountsPage() {
     }
 
     try {
-      const response = await fetch('/api/smapi/Pages/facebook');
+      const [response, metaAppsResponse] = await Promise.all([
+        fetch('/api/smapi/Pages/facebook'),
+        nextUserId.trim()
+          ? fetch(`/api/smapi/FacebookMetaApps?userId=${encodeURIComponent(nextUserId.trim())}`)
+          : Promise.resolve(null)
+      ]);
       const data = await response.json();
       if (Array.isArray(data)) {
         setPages((data as FacebookPageApi[]).map(toPageViewModel));
       } else {
         setPages([]);
+      }
+
+      if (metaAppsResponse?.ok) {
+        const metaAppsData = await metaAppsResponse.json();
+        setMetaApps(Array.isArray(metaAppsData) ? metaAppsData as FacebookMetaAppApi[] : []);
+      } else if (!nextUserId.trim()) {
+        setMetaApps([]);
       }
     } catch {
       setMessage('Failed to fetch Facebook pages from the backend.');
@@ -80,7 +109,15 @@ export default function FacebookAccountsPage() {
   }, [fetchPages, userId]);
 
   const resetForm = () => {
-    setFormData({ name: '', pageId: '', category: '', avatarUrl: '', accessToken: '' });
+    const defaultMetaApp = metaApps.find((item) => item.isDefault) ?? metaApps[0];
+    setFormData({
+      name: '',
+      pageId: '',
+      category: '',
+      avatarUrl: '',
+      accessToken: '',
+      facebookMetaAppId: defaultMetaApp ? String(defaultMetaApp.id) : ''
+    });
     setEditingPage(null);
     setModalMessage('');
   };
@@ -102,7 +139,8 @@ export default function FacebookAccountsPage() {
       pageId: page.pageId,
       category: page.category,
       avatarUrl: page.avatar,
-      accessToken: page.accessToken
+      accessToken: page.accessToken,
+      facebookMetaAppId: page.facebookMetaAppId ? String(page.facebookMetaAppId) : ''
     });
     setIsModalOpen(true);
   };
@@ -132,7 +170,8 @@ export default function FacebookAccountsPage() {
           accessToken: formData.accessToken,
           userId: userId.trim(),
           category: formData.category.trim() || null,
-          avatarUrl: formData.avatarUrl.trim() || null
+          avatarUrl: formData.avatarUrl.trim() || null,
+          facebookMetaAppId: formData.facebookMetaAppId ? Number(formData.facebookMetaAppId) : null
         }),
       });
 
@@ -158,6 +197,44 @@ export default function FacebookAccountsPage() {
       setModalMessage('Could not connect to the backend server.');
     } finally {
       setIsConnecting(false);
+    }
+  };
+
+  const handleSubscribeWebhook = async (page: FBPage) => {
+    setMessage('');
+
+    if (!page.userId && !userId.trim()) {
+      setMessage('Page owner User ID is required before subscribing the webhook.');
+      return;
+    }
+
+    if (!page.facebookMetaAppId) {
+      setMessage('Select a Meta App for this page before subscribing the webhook.');
+      return;
+    }
+
+    setSubscribingPageId(page.pageId);
+    try {
+      const response = await fetch('/api/smapi/FacebookMetaApps/page-subscriptions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: page.userId || userId.trim(),
+          pageId: page.pageId
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setMessage(data.message || `Webhook subscription failed. Backend status ${response.status}.`);
+        return;
+      }
+
+      setMessage(data.message || 'Webhook subscribed for this page.');
+    } catch {
+      setMessage('Could not connect to the backend server.');
+    } finally {
+      setSubscribingPageId('');
     }
   };
 
@@ -210,6 +287,13 @@ export default function FacebookAccountsPage() {
             <span className="material-symbols-outlined">add_circle</span>
             Connect Page
           </button>
+          <Link
+            href={metaAppsHref(userId)}
+            className="flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600/20 text-emerald-100 rounded-lg font-bold hover:bg-emerald-600/30 transition-all border border-emerald-500/20"
+          >
+            <span className="material-symbols-outlined">apps</span>
+            Meta Apps
+          </Link>
         </div>
       </div>
 
@@ -253,6 +337,7 @@ export default function FacebookAccountsPage() {
                 <h3 className="text-lg font-bold text-white truncate">{page.name}</h3>
                 <p className="text-neutral-500 text-[10px] truncate">ID: {page.pageId}</p>
                 {page.userId && <p className="text-neutral-600 text-[10px] truncate">Owner: {page.userId}</p>}
+                <p className="text-emerald-300 text-[10px] truncate">Meta App: {metaAppName(page.facebookMetaAppId, metaApps)}</p>
                 <div className="mt-3 flex items-center gap-2 text-[10px] text-neutral-400 bg-black/30 p-2 rounded border border-white/5">
                   <span className="material-symbols-outlined text-xs">key</span>
                   <span className="truncate">Token: {maskToken(page.accessToken)}</span>
@@ -282,6 +367,12 @@ export default function FacebookAccountsPage() {
                 >
                   Upload Queue
                 </Link>
+                <Link
+                  href={pageToolHref(page, 'comments', userId)}
+                  className="flex-grow py-2 rounded bg-emerald-600/20 text-xs font-bold text-emerald-100 hover:bg-emerald-600/30 transition-colors border border-emerald-500/20 text-center"
+                >
+                  Auto Replies
+                </Link>
                 <button
                   type="button"
                   onClick={() => openEditModal(page)}
@@ -298,6 +389,15 @@ export default function FacebookAccountsPage() {
                   <span className="material-symbols-outlined text-sm">delete</span>
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => handleSubscribeWebhook(page)}
+                disabled={subscribingPageId === page.pageId || !page.facebookMetaAppId}
+                className="w-full py-2 rounded bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 transition-colors border border-emerald-400/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={page.facebookMetaAppId ? 'Subscribe this page to its selected Meta App webhook' : 'Select a Meta App first'}
+              >
+                {subscribingPageId === page.pageId ? 'Subscribing...' : 'Subscribe Webhook'}
+              </button>
             </div>
           </div>
         ))}
@@ -384,6 +484,25 @@ export default function FacebookAccountsPage() {
                   />
                 </label>
 
+                <label className="space-y-1 block">
+                  <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-400 block">Meta Developer App</span>
+                  <select
+                    value={formData.facebookMetaAppId}
+                    onChange={(e) => setFormData({ ...formData, facebookMetaAppId: e.target.value })}
+                    className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all"
+                  >
+                    <option value="">No Meta App selected</option>
+                    {metaApps.map((metaApp) => (
+                      <option key={metaApp.id} value={metaApp.id}>
+                        {metaApp.name}{metaApp.isDefault ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="block text-xs text-neutral-500">
+                    Create apps from the Meta Apps page if this list is empty.
+                  </span>
+                </label>
+
                 {modalMessage && (
                   <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
                     {modalMessage}
@@ -435,11 +554,12 @@ function toPageViewModel(page: FacebookPageApi): FBPage {
     category: page.category || '',
     accessToken: page.accessToken,
     avatar: page.avatarUrl || '',
+    facebookMetaAppId: page.facebookMetaAppId,
     status: 'connected'
   };
 }
 
-function pageToolHref(page: FBPage, tool: 'apify' | 'rednote' | 'queue', fallbackUserId: string) {
+function pageToolHref(page: FBPage, tool: 'apify' | 'rednote' | 'queue' | 'comments', fallbackUserId: string) {
   const href = `/accounts/facebook/${encodeURIComponent(page.pageId)}/${tool}`;
   const ownerUserId = page.userId || fallbackUserId.trim();
   return ownerUserId ? `${href}?userId=${encodeURIComponent(ownerUserId)}` : href;
@@ -455,6 +575,21 @@ function maskToken(token: string) {
   }
 
   return `${token.slice(0, 6)}...${token.slice(-4)}`;
+}
+
+function metaAppName(metaAppId: number | undefined, metaApps: FacebookMetaAppApi[]) {
+  if (!metaAppId) {
+    return 'Not selected';
+  }
+
+  return metaApps.find((item) => item.id === metaAppId)?.name || `Meta App #${metaAppId}`;
+}
+
+function metaAppsHref(userId: string) {
+  const trimmedUserId = userId.trim();
+  return trimmedUserId
+    ? `/accounts/facebook/meta-apps?userId=${encodeURIComponent(trimmedUserId)}`
+    : '/accounts/facebook/meta-apps';
 }
 
 function getStoredUserId() {

@@ -51,6 +51,8 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ConnectionStrings__DefaultConnection=Host=db;Database=smapi_db;Username=postgres;Password=1234
       - LocalStorage__RootPath=/app/downloads
+      - FacebookWebhook__VerifyToken=${FACEBOOK_WEBHOOK_VERIFY_TOKEN:-}
+      - FacebookWebhook__AppSecret=${FACEBOOK_APP_SECRET:-}
     volumes:
       - ./downloads:/app/downloads
     depends_on:
