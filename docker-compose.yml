@@ -1,6 +1,8 @@
 services:
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: ./deploy
+    image: sm-caddy
     container_name: sm-caddy
     environment:
       - APP_DOMAIN=${APP_DOMAIN:-smautomate.duckdns.org}
@@ -9,7 +11,6 @@ services:
       - "443:443"
       - "443:443/udp"
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
