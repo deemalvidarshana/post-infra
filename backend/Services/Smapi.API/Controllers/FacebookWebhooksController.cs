@@ -185,7 +185,7 @@ namespace Smapi.API.Controllers
             setting.Prompt = NormalizePrompt(request.Prompt);
             setting.Tone = string.IsNullOrWhiteSpace(request.Tone) ? "Friendly" : request.Tone.Trim();
             setting.Language = string.IsNullOrWhiteSpace(request.Language) ? "Sinhala/English" : request.Language.Trim();
-            setting.MaxRepliesPerPostPerDay = Math.Clamp(request.MaxRepliesPerPostPerDay, 1, 100);
+            setting.MaxRepliesPerPostPerDay = Math.Max(request.MaxRepliesPerPostPerDay, 1);
             setting.IgnoreKeywords = NormalizeNullable(request.IgnoreKeywords);
             setting.EscalationKeywords = NormalizeNullable(request.EscalationKeywords);
             setting.GraphApiVersion = NormalizeGraphApiVersion(request.GraphApiVersion);

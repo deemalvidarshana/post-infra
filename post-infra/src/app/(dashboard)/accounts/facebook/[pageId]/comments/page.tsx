@@ -275,7 +275,6 @@ export default function FacebookCommentsPage() {
             <input
               type="number"
               min={1}
-              max={100}
               value={settings.maxRepliesPerPostPerDay}
               onChange={(event) => setSettings({ ...settings, maxRepliesPerPostPerDay: Number(event.target.value) || 1 })}
               className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none"

@@ -35,7 +35,7 @@ namespace Smapi.API.Models
         [MaxLength(64)]
         public string Language { get; set; } = "Sinhala/English";
 
-        [Range(1, 100)]
+        [Range(1, int.MaxValue)]
         public int MaxRepliesPerPostPerDay { get; set; } = 20;
 
         [MaxLength(2048)]

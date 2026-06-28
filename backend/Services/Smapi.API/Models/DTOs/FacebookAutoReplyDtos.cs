@@ -26,7 +26,7 @@ namespace Smapi.API.Models.DTOs
         [MaxLength(64)]
         public string? Language { get; set; }
 
-        [Range(1, 100)]
+        [Range(1, int.MaxValue)]
         public int MaxRepliesPerPostPerDay { get; set; } = 20;
 
         [MaxLength(2048)]
