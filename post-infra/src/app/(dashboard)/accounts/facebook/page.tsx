@@ -127,12 +127,25 @@ export default function FacebookAccountsPage() {
     setIsModalOpen(true);
   };
 
-  const openEditModal = (page: FBPage) => {
+  const openEditModal = async (page: FBPage) => {
     setEditingPage(page);
     setModalMessage('');
+    setMetaApps([]);
     if (page.userId) {
       setUserId(page.userId);
       window.localStorage.setItem('smapi_user_id', page.userId);
+
+      try {
+        const response = await fetch(`/api/smapi/FacebookMetaApps?userId=${encodeURIComponent(page.userId)}`);
+        if (response.ok) {
+          const data = await response.json();
+          setMetaApps(Array.isArray(data) ? data as FacebookMetaAppApi[] : []);
+        } else {
+          setModalMessage('Could not load Meta Apps for this page owner.');
+        }
+      } catch {
+        setModalMessage('Could not load Meta Apps for this page owner.');
+      }
     }
     setFormData({
       name: page.name,
