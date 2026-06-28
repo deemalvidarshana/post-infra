@@ -38,6 +38,16 @@ pipeline {
             }
         }
 
+        stage('Verify HTTPS Proxy') {
+            steps {
+                echo 'Validating the Caddy reverse proxy...'
+                sh 'docker-compose ps'
+                sh 'docker-compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile'
+                sh 'docker-compose logs --no-color --tail=100 caddy'
+                sh 'test "$(docker inspect --format="{{.State.Running}}" sm-caddy)" = "true"'
+            }
+        }
+
         stage('Cleanup') {
             steps {
                 echo 'Cleaning up unused Docker images...'
