@@ -44,7 +44,8 @@ namespace Smapi.API.Services
             var openRouterSetting = await FindGlobalOpenRouterSettingAsync(cancellationToken);
             if (openRouterSetting is null
                 || string.IsNullOrWhiteSpace(openRouterSetting.ApiKey)
-                || string.IsNullOrWhiteSpace(openRouterSetting.Model))
+                || string.IsNullOrWhiteSpace(openRouterSetting.Model)
+                || IsLegacyDirectGeminiSetting(openRouterSetting))
             {
                 throw new InvalidOperationException("OpenRouter settings are not configured.");
             }
@@ -221,6 +222,16 @@ namespace Smapi.API.Services
         {
             value = value.Trim();
             return value.Length <= 500 ? value : value[..500];
+        }
+
+        private static bool IsLegacyDirectGeminiSetting(GeminiSetting setting)
+        {
+            var model = setting.Model?.Trim() ?? string.Empty;
+            var apiKey = setting.ApiKey?.Trim() ?? string.Empty;
+
+            return model.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase)
+                || model.StartsWith("models/gemini-", StringComparison.OrdinalIgnoreCase)
+                || apiKey.StartsWith("AIza", StringComparison.Ordinal);
         }
     }
 }

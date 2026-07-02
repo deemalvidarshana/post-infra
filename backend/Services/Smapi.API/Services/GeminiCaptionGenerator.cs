@@ -257,13 +257,24 @@ namespace Smapi.API.Services
         private static bool IsConfigured(GeminiSetting setting)
         {
             return !string.IsNullOrWhiteSpace(setting.Model)
-                && !string.IsNullOrWhiteSpace(setting.ApiKey);
+                && !string.IsNullOrWhiteSpace(setting.ApiKey)
+                && !IsLegacyDirectGeminiSetting(setting);
         }
 
         private static string TrimForLog(string value)
         {
             value = value.Trim();
             return value.Length <= 500 ? value : value[..500];
+        }
+
+        private static bool IsLegacyDirectGeminiSetting(GeminiSetting setting)
+        {
+            var model = setting.Model?.Trim() ?? string.Empty;
+            var apiKey = setting.ApiKey?.Trim() ?? string.Empty;
+
+            return model.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase)
+                || model.StartsWith("models/gemini-", StringComparison.OrdinalIgnoreCase)
+                || apiKey.StartsWith("AIza", StringComparison.Ordinal);
         }
     }
 }
