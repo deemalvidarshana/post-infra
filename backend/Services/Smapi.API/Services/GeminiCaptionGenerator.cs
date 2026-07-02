@@ -17,22 +17,19 @@ namespace Smapi.API.Services
 
     public class GeminiCaptionGenerator : IGeminiCaptionGenerator
     {
-        private const string GlobalGeminiSettingUserId = "__global__";
-        private const int FrameCount = 2;
+        private const string GlobalOpenRouterSettingUserId = "__global__";
+        private const string OpenRouterChatCompletionsUrl = "https://openrouter.ai/api/v1/chat/completions";
         private readonly HttpClient _httpClient;
         private readonly SmapiDbContext _context;
-        private readonly IVideoFrameExtractor _frameExtractor;
         private readonly ILogger<GeminiCaptionGenerator> _logger;
 
         public GeminiCaptionGenerator(
             HttpClient httpClient,
             SmapiDbContext context,
-            IVideoFrameExtractor frameExtractor,
             ILogger<GeminiCaptionGenerator> logger)
         {
             _httpClient = httpClient;
             _context = context;
-            _frameExtractor = frameExtractor;
             _logger = logger;
         }
 
@@ -53,27 +50,9 @@ namespace Smapi.API.Services
                 return null;
             }
 
-            var frameDirectory = Path.Combine(
-                Path.GetTempPath(),
-                "smapi-gemini-frames",
-                post.Id.ToString(),
-                Guid.NewGuid().ToString("N"));
-
             try
             {
-                var frames = await _frameExtractor.ExtractRandomFramesAsync(
-                    videoPath,
-                    FrameCount,
-                    frameDirectory,
-                    cancellationToken);
-
-                if (frames.Count == 0)
-                {
-                    _logger.LogWarning("No frames were extracted for post {PostId}; skipping Gemini caption.", post.Id);
-                    return null;
-                }
-
-                return await RequestCaptionAsync(setting, pagePrompt.Prompt, frames, post, cancellationToken);
+                return await RequestCaptionAsync(setting, pagePrompt.Prompt, post, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -81,12 +60,8 @@ namespace Smapi.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Gemini caption generation failed for post {PostId}.", post.Id);
+                _logger.LogWarning(ex, "OpenRouter caption generation failed for post {PostId}.", post.Id);
                 return null;
-            }
-            finally
-            {
-                TryDeleteDirectory(frameDirectory);
             }
         }
 
@@ -94,7 +69,7 @@ namespace Smapi.API.Services
         {
             return await _context.GeminiSettings
                 .AsNoTracking()
-                .Where(item => item.UserId == GlobalGeminiSettingUserId)
+                .Where(item => item.UserId == GlobalOpenRouterSettingUserId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? await _context.GeminiSettings
                     .AsNoTracking()
@@ -121,42 +96,35 @@ namespace Smapi.API.Services
         private async Task<string?> RequestCaptionAsync(
             GeminiSetting setting,
             string prompt,
-            IReadOnlyList<ExtractedVideoFrame> frames,
             FacebookPostUrl post,
             CancellationToken cancellationToken)
         {
-            var parts = new List<object>();
-            foreach (var frame in frames.Take(FrameCount))
-            {
-                var bytes = await File.ReadAllBytesAsync(frame.Path, cancellationToken);
-                parts.Add(new
-                {
-                    inline_data = new
-                    {
-                        mime_type = frame.MimeType,
-                        data = Convert.ToBase64String(bytes)
-                    }
-                });
-            }
-
-            parts.Add(new { text = BuildPrompt(prompt, post) });
-
             var payload = new
             {
-                contents = new[]
+                model = NormalizeModel(setting.Model),
+                messages = new[]
                 {
                     new
                     {
+                        role = "system",
+                        content = "You write Facebook Reel captions for short-form social video pages."
+                    },
+                    new
+                    {
                         role = "user",
-                        parts
+                        content = BuildPrompt(prompt, post)
                     }
-                }
+                },
+                temperature = 0.7,
+                max_tokens = 700
             };
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(NormalizeModel(setting.Model))}:generateContent");
-            request.Headers.TryAddWithoutValidation("x-goog-api-key", setting.ApiKey.Trim());
+                OpenRouterChatCompletionsUrl);
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {setting.ApiKey.Trim()}");
+            request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
+            request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
             request.Content = JsonContent.Create(payload);
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -165,7 +133,7 @@ namespace Smapi.API.Services
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "Gemini caption request failed with status {StatusCode}: {Body}",
+                    "OpenRouter caption request failed with status {StatusCode}: {Body}",
                     (int)response.StatusCode,
                     TrimForLog(responseBody));
                 return null;
@@ -180,7 +148,7 @@ namespace Smapi.API.Services
             var builder = new StringBuilder();
             builder.AppendLine(prompt.Trim());
             builder.AppendLine();
-            builder.AppendLine("Use the attached random frames from the downloaded video.");
+            builder.AppendLine("No video frames are attached. Use the page prompt and available post metadata only.");
             builder.AppendLine("Follow the user's requested length, word count, language, and style exactly, even if it is longer than a typical social caption.");
             builder.AppendLine("Return only one final Facebook Reel caption text. Do not explain your reasoning.");
 
@@ -208,25 +176,53 @@ namespace Smapi.API.Services
         private static string? ExtractText(string responseBody)
         {
             using var document = JsonDocument.Parse(responseBody);
-            if (!document.RootElement.TryGetProperty("candidates", out var candidates)
-                || candidates.ValueKind != JsonValueKind.Array
-                || candidates.GetArrayLength() == 0)
+            if (!document.RootElement.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array
+                || choices.GetArrayLength() == 0)
             {
                 return null;
             }
 
-            var firstCandidate = candidates[0];
-            if (!firstCandidate.TryGetProperty("content", out var content)
-                || !content.TryGetProperty("parts", out var parts)
-                || parts.ValueKind != JsonValueKind.Array)
+            var firstChoice = choices[0];
+            if (firstChoice.TryGetProperty("message", out var message)
+                && message.TryGetProperty("content", out var content))
+            {
+                return ExtractContentText(content);
+            }
+
+            if (firstChoice.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String)
+            {
+                return text.GetString();
+            }
+
+            return null;
+        }
+
+        private static string? ExtractContentText(JsonElement content)
+        {
+            if (content.ValueKind == JsonValueKind.String)
+            {
+                return content.GetString();
+            }
+
+            if (content.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
 
             var builder = new StringBuilder();
-            foreach (var part in parts.EnumerateArray())
+            foreach (var part in content.EnumerateArray())
             {
-                if (part.TryGetProperty("text", out var textElement))
+                if (part.ValueKind == JsonValueKind.String)
+                {
+                    builder.Append(part.GetString());
+                    continue;
+                }
+
+                if (part.ValueKind == JsonValueKind.Object
+                    && part.TryGetProperty("text", out var textElement)
+                    && textElement.ValueKind == JsonValueKind.String)
                 {
                     builder.Append(textElement.GetString());
                 }
@@ -262,21 +258,6 @@ namespace Smapi.API.Services
         {
             return !string.IsNullOrWhiteSpace(setting.Model)
                 && !string.IsNullOrWhiteSpace(setting.ApiKey);
-        }
-
-        private static void TryDeleteDirectory(string directory)
-        {
-            try
-            {
-                if (Directory.Exists(directory))
-                {
-                    Directory.Delete(directory, recursive: true);
-                }
-            }
-            catch
-            {
-                // Frame snapshots are temporary and can be cleaned best-effort.
-            }
         }
 
         private static string TrimForLog(string value)

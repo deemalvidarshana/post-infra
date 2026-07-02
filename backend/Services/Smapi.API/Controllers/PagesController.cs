@@ -747,7 +747,7 @@ namespace Smapi.API.Controllers
                 return StatusCode(StatusCodes.Status502BadGateway, new
                 {
                     success = false,
-                    message = "AI caption could not be generated. Check the Gemini model/API key and this page's caption prompt.",
+                    message = "AI caption could not be generated. Check the OpenRouter model/API key and this page's caption prompt.",
                     post = ToResponse(post)
                 });
             }

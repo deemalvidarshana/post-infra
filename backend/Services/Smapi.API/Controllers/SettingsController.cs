@@ -12,7 +12,7 @@ namespace Smapi.API.Controllers
     public class SettingsController : ControllerBase
     {
         private const string GlobalApifySettingUserId = "__global__";
-        private const string GlobalGeminiSettingUserId = "__global__";
+        private const string GlobalOpenRouterSettingUserId = "__global__";
         private readonly SmapiDbContext _context;
         private readonly ILocalVideoStorageService _storage;
 
@@ -155,31 +155,31 @@ namespace Smapi.API.Controllers
             };
         }
 
-        [HttpGet("gemini")]
-        public async Task<ActionResult<GeminiSettingResponse>> GetGeminiSettings(
+        [HttpGet("openrouter")]
+        public async Task<ActionResult<OpenRouterSettingResponse>> GetOpenRouterSettings(
             CancellationToken cancellationToken)
         {
-            var setting = await FindGlobalGeminiSettingAsync(cancellationToken);
+            var setting = await FindGlobalOpenRouterSettingAsync(cancellationToken);
 
             if (setting is null)
             {
-                return NotFound(new { success = false, message = "Gemini settings have not been saved yet." });
+                return NotFound(new { success = false, message = "OpenRouter settings have not been saved yet." });
             }
 
-            return Ok(ToResponse(setting));
+            return Ok(ToOpenRouterResponse(setting));
         }
 
-        [HttpGet("gemini/{userId}")]
-        public Task<ActionResult<GeminiSettingResponse>> GetGeminiSettingsForLegacyUserRoute(
+        [HttpGet("openrouter/{userId}")]
+        public Task<ActionResult<OpenRouterSettingResponse>> GetOpenRouterSettingsForLegacyUserRoute(
             string userId,
             CancellationToken cancellationToken)
         {
-            return GetGeminiSettings(cancellationToken);
+            return GetOpenRouterSettings(cancellationToken);
         }
 
-        [HttpPut("gemini")]
-        public async Task<IActionResult> SaveGeminiSettings(
-            [FromBody] GeminiSettingRequest request,
+        [HttpPut("openrouter")]
+        public async Task<IActionResult> SaveOpenRouterSettings(
+            [FromBody] OpenRouterSettingRequest request,
             CancellationToken cancellationToken)
         {
             var model = request.Model?.Trim();
@@ -187,23 +187,23 @@ namespace Smapi.API.Controllers
 
             if (string.IsNullOrWhiteSpace(model))
             {
-                return BadRequest(new { success = false, message = "Gemini model is required." });
+                return BadRequest(new { success = false, message = "OpenRouter model is required." });
             }
 
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                return BadRequest(new { success = false, message = "Gemini API key is required." });
+                return BadRequest(new { success = false, message = "OpenRouter API key is required." });
             }
 
             var existing = await _context.GeminiSettings
-                .FirstOrDefaultAsync(item => item.UserId == GlobalGeminiSettingUserId, cancellationToken);
+                .FirstOrDefaultAsync(item => item.UserId == GlobalOpenRouterSettingUserId, cancellationToken);
             var now = DateTime.UtcNow;
 
             if (existing is null)
             {
                 existing = new GeminiSetting
                 {
-                    UserId = GlobalGeminiSettingUserId,
+                    UserId = GlobalOpenRouterSettingUserId,
                     Model = model,
                     ApiKey = apiKey,
                     CreatedAt = now,
@@ -223,16 +223,39 @@ namespace Smapi.API.Controllers
             return Ok(new
             {
                 success = true,
-                message = "Gemini settings saved successfully.",
-                settings = ToResponse(existing)
+                message = "OpenRouter settings saved successfully.",
+                settings = ToOpenRouterResponse(existing)
             });
         }
 
-        private async Task<GeminiSetting?> FindGlobalGeminiSettingAsync(CancellationToken cancellationToken)
+        [HttpGet("gemini")]
+        public async Task<ActionResult<OpenRouterSettingResponse>> GetGeminiSettingsLegacy(
+            CancellationToken cancellationToken)
+        {
+            return await GetOpenRouterSettings(cancellationToken);
+        }
+
+        [HttpGet("gemini/{userId}")]
+        public Task<ActionResult<OpenRouterSettingResponse>> GetGeminiSettingsForLegacyUserRoute(
+            string userId,
+            CancellationToken cancellationToken)
+        {
+            return GetOpenRouterSettings(cancellationToken);
+        }
+
+        [HttpPut("gemini")]
+        public Task<IActionResult> SaveGeminiSettingsLegacy(
+            [FromBody] OpenRouterSettingRequest request,
+            CancellationToken cancellationToken)
+        {
+            return SaveOpenRouterSettings(request, cancellationToken);
+        }
+
+        private async Task<GeminiSetting?> FindGlobalOpenRouterSettingAsync(CancellationToken cancellationToken)
         {
             return await _context.GeminiSettings
                 .AsNoTracking()
-                .Where(item => item.UserId == GlobalGeminiSettingUserId)
+                .Where(item => item.UserId == GlobalOpenRouterSettingUserId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? await _context.GeminiSettings
                     .AsNoTracking()
@@ -240,11 +263,11 @@ namespace Smapi.API.Controllers
                     .FirstOrDefaultAsync(cancellationToken);
         }
 
-        private static GeminiSettingResponse ToResponse(GeminiSetting setting)
+        private static OpenRouterSettingResponse ToOpenRouterResponse(GeminiSetting setting)
         {
-            return new GeminiSettingResponse
+            return new OpenRouterSettingResponse
             {
-                UserId = GlobalGeminiSettingUserId,
+                UserId = GlobalOpenRouterSettingUserId,
                 Model = setting.Model,
                 ApiKey = setting.ApiKey,
                 HasApiKey = !string.IsNullOrWhiteSpace(setting.ApiKey),

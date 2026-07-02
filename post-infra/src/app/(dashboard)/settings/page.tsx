@@ -17,7 +17,7 @@ interface ApifySettingsResponse {
   updatedAt?: string;
 }
 
-interface GeminiSettingsResponse {
+interface OpenRouterSettingsResponse {
   userId: string;
   model: string;
   apiKey?: string;
@@ -29,28 +29,28 @@ interface GeminiSettingsResponse {
 export default function SettingsPage() {
   const [message, setMessage] = useState('');
   const [isSavingApify, setIsSavingApify] = useState(false);
-  const [isSavingGemini, setIsSavingGemini] = useState(false);
+  const [isSavingOpenRouter, setIsSavingOpenRouter] = useState(false);
   const [downloadFolder, setDownloadFolder] = useState('');
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [apifyToken, setApifyToken] = useState('');
   const [hasSavedApifyToken, setHasSavedApifyToken] = useState(false);
   const [apifyTokenLength, setApifyTokenLength] = useState(0);
   const [apifyUpdatedAt, setApifyUpdatedAt] = useState('');
-  const [geminiModel, setGeminiModel] = useState('');
-  const [geminiApiKey, setGeminiApiKey] = useState('');
-  const [hasSavedGeminiApiKey, setHasSavedGeminiApiKey] = useState(false);
-  const [geminiApiKeyLength, setGeminiApiKeyLength] = useState(0);
-  const [geminiUpdatedAt, setGeminiUpdatedAt] = useState('');
+  const [openRouterModel, setOpenRouterModel] = useState('');
+  const [openRouterApiKey, setOpenRouterApiKey] = useState('');
+  const [hasSavedOpenRouterApiKey, setHasSavedOpenRouterApiKey] = useState(false);
+  const [openRouterApiKeyLength, setOpenRouterApiKeyLength] = useState(0);
+  const [openRouterUpdatedAt, setOpenRouterUpdatedAt] = useState('');
   const hasLoadedStoredUser = useRef(false);
 
   const loadSettings = useCallback(async () => {
     setMessage('');
 
     try {
-      const [localResponse, apifyResponse, geminiResponse] = await Promise.all([
+      const [localResponse, apifyResponse, openRouterResponse] = await Promise.all([
         fetch('/api/smapi/Settings/s3/global'),
         fetch('/api/smapi/Settings/apify'),
-        fetch('/api/smapi/Settings/gemini')
+        fetch('/api/smapi/Settings/openrouter')
       ]);
 
       if (!localResponse.ok) {
@@ -78,21 +78,21 @@ export default function SettingsPage() {
         return;
       }
 
-      if (geminiResponse.status === 404) {
-        setGeminiModel('');
-        setGeminiApiKey('');
-        setHasSavedGeminiApiKey(false);
-        setGeminiApiKeyLength(0);
-        setGeminiUpdatedAt('');
-      } else if (geminiResponse.ok) {
-        const geminiData = await geminiResponse.json() as GeminiSettingsResponse;
-        setGeminiModel(geminiData.model || '');
-        setGeminiApiKey(geminiData.apiKey || '');
-        setHasSavedGeminiApiKey(geminiData.hasApiKey);
-        setGeminiApiKeyLength(geminiData.apiKeyLength || 0);
-        setGeminiUpdatedAt(geminiData.updatedAt || '');
+      if (openRouterResponse.status === 404) {
+        setOpenRouterModel('');
+        setOpenRouterApiKey('');
+        setHasSavedOpenRouterApiKey(false);
+        setOpenRouterApiKeyLength(0);
+        setOpenRouterUpdatedAt('');
+      } else if (openRouterResponse.ok) {
+        const openRouterData = await openRouterResponse.json() as OpenRouterSettingsResponse;
+        setOpenRouterModel(openRouterData.model || '');
+        setOpenRouterApiKey(openRouterData.apiKey || '');
+        setHasSavedOpenRouterApiKey(openRouterData.hasApiKey);
+        setOpenRouterApiKeyLength(openRouterData.apiKeyLength || 0);
+        setOpenRouterUpdatedAt(openRouterData.updatedAt || '');
       } else {
-        setMessage('Local and Apify settings loaded, but Gemini settings could not be loaded.');
+        setMessage('Local and Apify settings loaded, but OpenRouter settings could not be loaded.');
         return;
       }
 
@@ -149,48 +149,48 @@ export default function SettingsPage() {
     }
   };
 
-  const saveGeminiSettings = async (event: React.FormEvent) => {
+  const saveOpenRouterSettings = async (event: React.FormEvent) => {
     event.preventDefault();
     setMessage('');
 
-    if (!geminiModel.trim()) {
-      setMessage('Enter a Gemini model before saving.');
+    if (!openRouterModel.trim()) {
+      setMessage('Enter an OpenRouter model before saving.');
       return;
     }
 
-    if (!geminiApiKey.trim()) {
-      setMessage('Enter a Gemini API key before saving.');
+    if (!openRouterApiKey.trim()) {
+      setMessage('Enter an OpenRouter API key before saving.');
       return;
     }
 
-    setIsSavingGemini(true);
+    setIsSavingOpenRouter(true);
     try {
-      const response = await fetch('/api/smapi/Settings/gemini', {
+      const response = await fetch('/api/smapi/Settings/openrouter', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: geminiModel.trim(),
-          apiKey: geminiApiKey.trim()
+          model: openRouterModel.trim(),
+          apiKey: openRouterApiKey.trim()
         })
       });
 
       const data = await response.json();
       if (!response.ok || !data.success) {
-        setMessage(data.message || `Failed to save Gemini settings. Backend status ${response.status}.`);
+        setMessage(data.message || `Failed to save OpenRouter settings. Backend status ${response.status}.`);
         return;
       }
 
-      const savedSettings = data.settings as GeminiSettingsResponse | undefined;
-      setGeminiModel(savedSettings?.model || geminiModel.trim());
-      setGeminiApiKey(savedSettings?.apiKey || geminiApiKey.trim());
-      setHasSavedGeminiApiKey(savedSettings?.hasApiKey ?? true);
-      setGeminiApiKeyLength(savedSettings?.apiKeyLength || geminiApiKey.trim().length);
-      setGeminiUpdatedAt(savedSettings?.updatedAt || new Date().toISOString());
-      setMessage('Global Gemini settings saved successfully.');
+      const savedSettings = data.settings as OpenRouterSettingsResponse | undefined;
+      setOpenRouterModel(savedSettings?.model || openRouterModel.trim());
+      setOpenRouterApiKey(savedSettings?.apiKey || openRouterApiKey.trim());
+      setHasSavedOpenRouterApiKey(savedSettings?.hasApiKey ?? true);
+      setOpenRouterApiKeyLength(savedSettings?.apiKeyLength || openRouterApiKey.trim().length);
+      setOpenRouterUpdatedAt(savedSettings?.updatedAt || new Date().toISOString());
+      setMessage('Global OpenRouter settings saved successfully.');
     } catch {
       setMessage('Could not connect to the backend server.');
     } finally {
-      setIsSavingGemini(false);
+      setIsSavingOpenRouter(false);
     }
   };
 
@@ -296,10 +296,10 @@ export default function SettingsPage() {
       </section>
 
       <section>
-        <form onSubmit={saveGeminiSettings} className="glass-panel rounded-xl border border-white/5 p-6 space-y-5">
+        <form onSubmit={saveOpenRouterSettings} className="glass-panel rounded-xl border border-white/5 p-6 space-y-5">
           <div>
-            <h2 className="text-lg font-bold text-white">Gemini API</h2>
-            <p className="text-sm text-neutral-500 mt-1">One global model and API key used by Gemini caption automation.</p>
+            <h2 className="text-lg font-bold text-white">OpenRouter API</h2>
+            <p className="text-sm text-neutral-500 mt-1">One global model and API key used by AI captions and Facebook auto-replies.</p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -308,10 +308,10 @@ export default function SettingsPage() {
               <input
                 required
                 type="text"
-                value={geminiModel}
-                onChange={(event) => setGeminiModel(event.target.value)}
+                value={openRouterModel}
+                onChange={(event) => setOpenRouterModel(event.target.value)}
                 className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all"
-                placeholder="gemini-2.0-flash"
+                placeholder="openai/gpt-4o-mini"
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -322,10 +322,10 @@ export default function SettingsPage() {
               <input
                 required
                 type="text"
-                value={geminiApiKey}
-                onChange={(event) => setGeminiApiKey(event.target.value)}
+                value={openRouterApiKey}
+                onChange={(event) => setOpenRouterApiKey(event.target.value)}
                 className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 focus:outline-none transition-all"
-                placeholder="AIza..."
+                placeholder="sk-or-v1-..."
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -333,25 +333,25 @@ export default function SettingsPage() {
           </div>
 
           <div className="rounded-lg border border-white/5 bg-black/30 px-4 py-3 text-sm text-neutral-300">
-            {hasSavedGeminiApiKey ? (
+            {hasSavedOpenRouterApiKey ? (
               <div className="space-y-1">
-                <p className="font-semibold text-emerald-200">Gemini settings are saved in the database.</p>
+                <p className="font-semibold text-emerald-200">OpenRouter settings are saved in the database.</p>
                 <p className="text-xs text-neutral-500">
-                  Model: {geminiModel || '-'} | Key length: {geminiApiKeyLength || '-'} characters
-                  {geminiUpdatedAt ? ` | Updated: ${new Date(geminiUpdatedAt).toLocaleString()}` : ''}
+                  Model: {openRouterModel || '-'} | Key length: {openRouterApiKeyLength || '-'} characters
+                  {openRouterUpdatedAt ? ` | Updated: ${new Date(openRouterUpdatedAt).toLocaleString()}` : ''}
                 </p>
               </div>
             ) : (
-              'No Gemini settings saved for this user yet.'
+              'No OpenRouter settings saved for this user yet.'
             )}
           </div>
 
           <button
             type="submit"
-            disabled={isSavingGemini}
+            disabled={isSavingOpenRouter}
             className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition-all flex items-center justify-center gap-3 disabled:opacity-50 shadow-lg shadow-blue-600/20"
           >
-            {isSavingGemini ? (
+            {isSavingOpenRouter ? (
               <>
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                 Saving...
@@ -359,7 +359,7 @@ export default function SettingsPage() {
             ) : (
               <>
                 <span className="material-symbols-outlined text-sm">key</span>
-                Save Gemini Settings
+                Save OpenRouter Settings
               </>
             )}
           </button>

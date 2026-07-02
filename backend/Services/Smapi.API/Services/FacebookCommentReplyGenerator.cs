@@ -21,7 +21,8 @@ namespace Smapi.API.Services
 
     public class FacebookCommentReplyGenerator : IFacebookCommentReplyGenerator
     {
-        private const string GlobalGeminiSettingUserId = "__global__";
+        private const string GlobalOpenRouterSettingUserId = "__global__";
+        private const string OpenRouterChatCompletionsUrl = "https://openrouter.ai/api/v1/chat/completions";
         private readonly HttpClient _httpClient;
         private readonly SmapiDbContext _context;
         private readonly ILogger<FacebookCommentReplyGenerator> _logger;
@@ -40,42 +41,40 @@ namespace Smapi.API.Services
             FacebookCommentReplyContext context,
             CancellationToken cancellationToken)
         {
-            var geminiSetting = await FindGlobalGeminiSettingAsync(cancellationToken);
-            if (geminiSetting is null
-                || string.IsNullOrWhiteSpace(geminiSetting.ApiKey)
-                || string.IsNullOrWhiteSpace(geminiSetting.Model))
+            var openRouterSetting = await FindGlobalOpenRouterSettingAsync(cancellationToken);
+            if (openRouterSetting is null
+                || string.IsNullOrWhiteSpace(openRouterSetting.ApiKey)
+                || string.IsNullOrWhiteSpace(openRouterSetting.Model))
             {
-                throw new InvalidOperationException("Gemini settings are not configured.");
+                throw new InvalidOperationException("OpenRouter settings are not configured.");
             }
 
             var payload = new
             {
-                contents = new[]
+                model = NormalizeModel(openRouterSetting.Model),
+                messages = new[]
                 {
                     new
                     {
+                        role = "system",
+                        content = "You write short, warm, natural Facebook comment replies for a storytelling reel page."
+                    },
+                    new
+                    {
                         role = "user",
-                        parts = new[]
-                        {
-                            new { text = BuildPrompt(context) }
-                        }
+                        content = BuildPrompt(context)
                     }
                 },
-                generationConfig = new
-                {
-                    temperature = 0.4,
-                    maxOutputTokens = 100,
-                    thinkingConfig = new
-                    {
-                        thinkingBudget = 0
-                    }
-                }
+                temperature = 0.4,
+                max_tokens = 100
             };
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(NormalizeModel(geminiSetting.Model))}:generateContent");
-            request.Headers.TryAddWithoutValidation("x-goog-api-key", geminiSetting.ApiKey.Trim());
+                OpenRouterChatCompletionsUrl);
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {openRouterSetting.ApiKey.Trim()}");
+            request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
+            request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
             request.Content = JsonContent.Create(payload);
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -83,26 +82,26 @@ namespace Smapi.API.Services
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "Gemini comment reply request failed with status {StatusCode}: {Body}",
+                    "OpenRouter comment reply request failed with status {StatusCode}: {Body}",
                     (int)response.StatusCode,
                     TrimForLog(responseBody));
-                throw new InvalidOperationException($"Gemini reply generation failed with status {(int)response.StatusCode}.");
+                throw new InvalidOperationException($"OpenRouter reply generation failed with status {(int)response.StatusCode}.");
             }
 
             var reply = CleanReply(ExtractText(responseBody));
             if (string.IsNullOrWhiteSpace(reply))
             {
-                throw new InvalidOperationException("Gemini returned an empty reply.");
+                throw new InvalidOperationException("OpenRouter returned an empty reply.");
             }
 
             return reply;
         }
 
-        private async Task<GeminiSetting?> FindGlobalGeminiSettingAsync(CancellationToken cancellationToken)
+        private async Task<GeminiSetting?> FindGlobalOpenRouterSettingAsync(CancellationToken cancellationToken)
         {
             return await _context.GeminiSettings
                 .AsNoTracking()
-                .Where(item => item.UserId == GlobalGeminiSettingUserId)
+                .Where(item => item.UserId == GlobalOpenRouterSettingUserId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? await _context.GeminiSettings
                     .AsNoTracking()
@@ -142,25 +141,53 @@ namespace Smapi.API.Services
         private static string? ExtractText(string responseBody)
         {
             using var document = JsonDocument.Parse(responseBody);
-            if (!document.RootElement.TryGetProperty("candidates", out var candidates)
-                || candidates.ValueKind != JsonValueKind.Array
-                || candidates.GetArrayLength() == 0)
+            if (!document.RootElement.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array
+                || choices.GetArrayLength() == 0)
             {
                 return null;
             }
 
-            var firstCandidate = candidates[0];
-            if (!firstCandidate.TryGetProperty("content", out var content)
-                || !content.TryGetProperty("parts", out var parts)
-                || parts.ValueKind != JsonValueKind.Array)
+            var firstChoice = choices[0];
+            if (firstChoice.TryGetProperty("message", out var message)
+                && message.TryGetProperty("content", out var content))
+            {
+                return ExtractContentText(content);
+            }
+
+            if (firstChoice.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String)
+            {
+                return text.GetString();
+            }
+
+            return null;
+        }
+
+        private static string? ExtractContentText(JsonElement content)
+        {
+            if (content.ValueKind == JsonValueKind.String)
+            {
+                return content.GetString();
+            }
+
+            if (content.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
 
             var builder = new StringBuilder();
-            foreach (var part in parts.EnumerateArray())
+            foreach (var part in content.EnumerateArray())
             {
-                if (part.TryGetProperty("text", out var textElement))
+                if (part.ValueKind == JsonValueKind.String)
+                {
+                    builder.Append(part.GetString());
+                    continue;
+                }
+
+                if (part.ValueKind == JsonValueKind.Object
+                    && part.TryGetProperty("text", out var textElement)
+                    && textElement.ValueKind == JsonValueKind.String)
                 {
                     builder.Append(textElement.GetString());
                 }
