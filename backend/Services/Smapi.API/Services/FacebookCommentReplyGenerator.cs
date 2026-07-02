@@ -23,10 +23,22 @@ namespace Smapi.API.Services
     public class FacebookCommentReplyGenerator : IFacebookCommentReplyGenerator
     {
         private const string GlobalOpenRouterSettingUserId = "__global__";
+        private const string GlobalGroqSettingUserId = "__global_groq__";
+        private const string GlobalAiProviderSettingUserId = "__global_ai_provider__";
+        private const string OpenRouterProvider = "openrouter";
+        private const string GroqProvider = "groq";
         private const string OpenRouterChatCompletionsUrl = "https://openrouter.ai/api/v1/chat/completions";
+        private const string GroqChatCompletionsUrl = "https://api.groq.com/openai/v1/chat/completions";
         private readonly HttpClient _httpClient;
         private readonly SmapiDbContext _context;
         private readonly ILogger<FacebookCommentReplyGenerator> _logger;
+
+        private sealed record AiProviderConfig(
+            string Provider,
+            string Label,
+            string EndpointUrl,
+            string Model,
+            string ApiKey);
 
         public FacebookCommentReplyGenerator(
             HttpClient httpClient,
@@ -42,18 +54,15 @@ namespace Smapi.API.Services
             FacebookCommentReplyContext context,
             CancellationToken cancellationToken)
         {
-            var openRouterSetting = await FindGlobalOpenRouterSettingAsync(cancellationToken);
-            if (openRouterSetting is null
-                || string.IsNullOrWhiteSpace(openRouterSetting.ApiKey)
-                || string.IsNullOrWhiteSpace(openRouterSetting.Model)
-                || IsLegacyDirectGeminiSetting(openRouterSetting))
+            var aiProvider = await FindActiveAiProviderSettingAsync(cancellationToken);
+            if (aiProvider is null)
             {
-                throw new InvalidOperationException("OpenRouter settings are not configured.");
+                throw new InvalidOperationException("AI provider settings are not configured.");
             }
 
             var payload = new
             {
-                model = NormalizeModel(openRouterSetting.Model),
+                model = NormalizeModel(aiProvider.Model),
                 messages = new[]
                 {
                     new
@@ -73,10 +82,13 @@ namespace Smapi.API.Services
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                OpenRouterChatCompletionsUrl);
-            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {openRouterSetting.ApiKey.Trim()}");
-            request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
-            request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
+                aiProvider.EndpointUrl);
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {aiProvider.ApiKey.Trim()}");
+            if (aiProvider.Provider == OpenRouterProvider)
+            {
+                request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
+                request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
+            }
             request.Content = JsonContent.Create(payload);
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -84,51 +96,97 @@ namespace Smapi.API.Services
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "OpenRouter comment reply request failed with status {StatusCode}: {Body}",
+                    "{Provider} comment reply request failed with status {StatusCode}: {Body}",
+                    aiProvider.Label,
                     (int)response.StatusCode,
                     TrimForLog(responseBody));
 
                 if (ShouldUseFallback(response.StatusCode))
                 {
-                    return BuildFallbackReply(context, $"OpenRouter returned status {(int)response.StatusCode}");
+                    return BuildFallbackReply(context, $"{aiProvider.Label} returned status {(int)response.StatusCode}");
                 }
 
-                throw new InvalidOperationException($"OpenRouter reply generation failed with status {(int)response.StatusCode}.");
+                throw new InvalidOperationException($"{aiProvider.Label} reply generation failed with status {(int)response.StatusCode}.");
             }
 
-            string? openRouterReply = null;
+            string? generatedReply = null;
             try
             {
-                openRouterReply = ExtractText(responseBody);
+                generatedReply = ExtractText(responseBody);
             }
             catch (JsonException ex)
             {
                 _logger.LogWarning(
                     ex,
-                    "OpenRouter comment reply response could not be parsed for page {PageId}, comment {CommentId}.",
+                    "{Provider} comment reply response could not be parsed for page {PageId}, comment {CommentId}.",
+                    aiProvider.Label,
                     context.Page.PageId,
                     context.Event.CommentId);
             }
 
-            var reply = CleanReply(openRouterReply);
+            var reply = CleanReply(generatedReply);
             if (string.IsNullOrWhiteSpace(reply))
             {
-                return BuildFallbackReply(context, "OpenRouter returned an empty reply");
+                return BuildFallbackReply(context, $"{aiProvider.Label} returned an empty reply");
             }
 
             return reply;
         }
 
-        private async Task<GeminiSetting?> FindGlobalOpenRouterSettingAsync(CancellationToken cancellationToken)
+        private async Task<AiProviderConfig?> FindActiveAiProviderSettingAsync(CancellationToken cancellationToken)
         {
-            return await _context.GeminiSettings
+            var activeProviderSetting = await _context.GeminiSettings
                 .AsNoTracking()
-                .Where(item => item.UserId == GlobalOpenRouterSettingUserId)
-                .FirstOrDefaultAsync(cancellationToken)
-                ?? await _context.GeminiSettings
-                    .AsNoTracking()
-                    .OrderByDescending(item => item.UpdatedAt)
-                    .FirstOrDefaultAsync(cancellationToken);
+                .FirstOrDefaultAsync(item => item.UserId == GlobalAiProviderSettingUserId, cancellationToken);
+            var activeProvider = NormalizeProvider(activeProviderSetting?.Model);
+
+            var openRouterSetting = await FindProviderSettingAsync(OpenRouterProvider, cancellationToken);
+            var groqSetting = await FindProviderSettingAsync(GroqProvider, cancellationToken);
+
+            if (activeProvider is null)
+            {
+                activeProvider = groqSetting is not null
+                    ? GroqProvider
+                    : OpenRouterProvider;
+            }
+
+            var selectedSetting = activeProvider == GroqProvider
+                ? groqSetting
+                : openRouterSetting;
+
+            if (!IsConfiguredProviderSetting(activeProvider, selectedSetting))
+            {
+                return null;
+            }
+
+            return new AiProviderConfig(
+                activeProvider,
+                activeProvider == GroqProvider ? "Groq" : "OpenRouter",
+                activeProvider == GroqProvider ? GroqChatCompletionsUrl : OpenRouterChatCompletionsUrl,
+                selectedSetting!.Model,
+                selectedSetting.ApiKey);
+        }
+
+        private async Task<GeminiSetting?> FindProviderSettingAsync(
+            string provider,
+            CancellationToken cancellationToken)
+        {
+            var userId = provider == GroqProvider
+                ? GlobalGroqSettingUserId
+                : GlobalOpenRouterSettingUserId;
+
+            var setting = await _context.GeminiSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(item => item.UserId == userId, cancellationToken);
+
+            if (provider == OpenRouterProvider
+                && setting is not null
+                && IsLegacyDirectGeminiSetting(setting))
+            {
+                return null;
+            }
+
+            return setting;
         }
 
         private static string BuildPrompt(FacebookCommentReplyContext context)
@@ -347,6 +405,29 @@ namespace Smapi.API.Services
         private static bool ContainsAny(string value, params string[] candidates)
         {
             return candidates.Any(candidate => value.Contains(candidate, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsConfiguredProviderSetting(string provider, GeminiSetting? setting)
+        {
+            if (setting is null
+                || string.IsNullOrWhiteSpace(setting.Model)
+                || string.IsNullOrWhiteSpace(setting.ApiKey))
+            {
+                return false;
+            }
+
+            return provider != OpenRouterProvider || !IsLegacyDirectGeminiSetting(setting);
+        }
+
+        private static string? NormalizeProvider(string? provider)
+        {
+            provider = provider?.Trim().ToLowerInvariant();
+            return provider switch
+            {
+                OpenRouterProvider => OpenRouterProvider,
+                GroqProvider => GroqProvider,
+                _ => null
+            };
         }
 
         private static string TrimForLog(string value)

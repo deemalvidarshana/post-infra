@@ -18,10 +18,22 @@ namespace Smapi.API.Services
     public class GeminiCaptionGenerator : IGeminiCaptionGenerator
     {
         private const string GlobalOpenRouterSettingUserId = "__global__";
+        private const string GlobalGroqSettingUserId = "__global_groq__";
+        private const string GlobalAiProviderSettingUserId = "__global_ai_provider__";
+        private const string OpenRouterProvider = "openrouter";
+        private const string GroqProvider = "groq";
         private const string OpenRouterChatCompletionsUrl = "https://openrouter.ai/api/v1/chat/completions";
+        private const string GroqChatCompletionsUrl = "https://api.groq.com/openai/v1/chat/completions";
         private readonly HttpClient _httpClient;
         private readonly SmapiDbContext _context;
         private readonly ILogger<GeminiCaptionGenerator> _logger;
+
+        private sealed record AiProviderConfig(
+            string Provider,
+            string Label,
+            string EndpointUrl,
+            string Model,
+            string ApiKey);
 
         public GeminiCaptionGenerator(
             HttpClient httpClient,
@@ -38,8 +50,8 @@ namespace Smapi.API.Services
             FacebookPostUrl post,
             CancellationToken cancellationToken)
         {
-            var setting = await FindGlobalGeminiSettingAsync(cancellationToken);
-            if (setting is null || !IsConfigured(setting))
+            var setting = await FindActiveAiProviderSettingAsync(cancellationToken);
+            if (setting is null)
             {
                 return null;
             }
@@ -60,21 +72,65 @@ namespace Smapi.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "OpenRouter caption generation failed for post {PostId}.", post.Id);
+                _logger.LogWarning(ex, "AI caption generation failed for post {PostId}.", post.Id);
                 return null;
             }
         }
 
-        private async Task<GeminiSetting?> FindGlobalGeminiSettingAsync(CancellationToken cancellationToken)
+        private async Task<AiProviderConfig?> FindActiveAiProviderSettingAsync(CancellationToken cancellationToken)
         {
-            return await _context.GeminiSettings
+            var activeProviderSetting = await _context.GeminiSettings
                 .AsNoTracking()
-                .Where(item => item.UserId == GlobalOpenRouterSettingUserId)
-                .FirstOrDefaultAsync(cancellationToken)
-                ?? await _context.GeminiSettings
-                    .AsNoTracking()
-                    .OrderByDescending(item => item.UpdatedAt)
-                    .FirstOrDefaultAsync(cancellationToken);
+                .FirstOrDefaultAsync(item => item.UserId == GlobalAiProviderSettingUserId, cancellationToken);
+            var activeProvider = NormalizeProvider(activeProviderSetting?.Model);
+
+            var openRouterSetting = await FindProviderSettingAsync(OpenRouterProvider, cancellationToken);
+            var groqSetting = await FindProviderSettingAsync(GroqProvider, cancellationToken);
+
+            if (activeProvider is null)
+            {
+                activeProvider = groqSetting is not null
+                    ? GroqProvider
+                    : OpenRouterProvider;
+            }
+
+            var selectedSetting = activeProvider == GroqProvider
+                ? groqSetting
+                : openRouterSetting;
+
+            if (!IsConfiguredProviderSetting(activeProvider, selectedSetting))
+            {
+                return null;
+            }
+
+            return new AiProviderConfig(
+                activeProvider,
+                activeProvider == GroqProvider ? "Groq" : "OpenRouter",
+                activeProvider == GroqProvider ? GroqChatCompletionsUrl : OpenRouterChatCompletionsUrl,
+                selectedSetting!.Model,
+                selectedSetting.ApiKey);
+        }
+
+        private async Task<GeminiSetting?> FindProviderSettingAsync(
+            string provider,
+            CancellationToken cancellationToken)
+        {
+            var userId = provider == GroqProvider
+                ? GlobalGroqSettingUserId
+                : GlobalOpenRouterSettingUserId;
+
+            var setting = await _context.GeminiSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(item => item.UserId == userId, cancellationToken);
+
+            if (provider == OpenRouterProvider
+                && setting is not null
+                && IsLegacyDirectGeminiSetting(setting))
+            {
+                return null;
+            }
+
+            return setting;
         }
 
         private async Task<RedNoteCaptionPrompt?> FindRedNoteCaptionPromptAsync(
@@ -94,7 +150,7 @@ namespace Smapi.API.Services
         }
 
         private async Task<string?> RequestCaptionAsync(
-            GeminiSetting setting,
+            AiProviderConfig setting,
             string prompt,
             FacebookPostUrl post,
             CancellationToken cancellationToken)
@@ -121,10 +177,13 @@ namespace Smapi.API.Services
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                OpenRouterChatCompletionsUrl);
+                setting.EndpointUrl);
             request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {setting.ApiKey.Trim()}");
-            request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
-            request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
+            if (setting.Provider == OpenRouterProvider)
+            {
+                request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://smautomate.duckdns.org");
+                request.Headers.TryAddWithoutValidation("X-OpenRouter-Title", "SM Automate");
+            }
             request.Content = JsonContent.Create(payload);
 
             using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -133,7 +192,8 @@ namespace Smapi.API.Services
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "OpenRouter caption request failed with status {StatusCode}: {Body}",
+                    "{Provider} caption request failed with status {StatusCode}: {Body}",
+                    setting.Label,
                     (int)response.StatusCode,
                     TrimForLog(responseBody));
                 return null;
@@ -254,11 +314,27 @@ namespace Smapi.API.Services
             return caption.Length <= 2200 ? caption : caption[..2200].Trim();
         }
 
-        private static bool IsConfigured(GeminiSetting setting)
+        private static bool IsConfiguredProviderSetting(string provider, GeminiSetting? setting)
         {
-            return !string.IsNullOrWhiteSpace(setting.Model)
-                && !string.IsNullOrWhiteSpace(setting.ApiKey)
-                && !IsLegacyDirectGeminiSetting(setting);
+            if (setting is null
+                || string.IsNullOrWhiteSpace(setting.Model)
+                || string.IsNullOrWhiteSpace(setting.ApiKey))
+            {
+                return false;
+            }
+
+            return provider != OpenRouterProvider || !IsLegacyDirectGeminiSetting(setting);
+        }
+
+        private static string? NormalizeProvider(string? provider)
+        {
+            provider = provider?.Trim().ToLowerInvariant();
+            return provider switch
+            {
+                OpenRouterProvider => OpenRouterProvider,
+                GroqProvider => GroqProvider,
+                _ => null
+            };
         }
 
         private static string TrimForLog(string value)
