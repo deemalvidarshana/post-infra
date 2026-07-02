@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -86,13 +87,33 @@ namespace Smapi.API.Services
                     "OpenRouter comment reply request failed with status {StatusCode}: {Body}",
                     (int)response.StatusCode,
                     TrimForLog(responseBody));
+
+                if (ShouldUseFallback(response.StatusCode))
+                {
+                    return BuildFallbackReply(context, $"OpenRouter returned status {(int)response.StatusCode}");
+                }
+
                 throw new InvalidOperationException($"OpenRouter reply generation failed with status {(int)response.StatusCode}.");
             }
 
-            var reply = CleanReply(ExtractText(responseBody));
+            string? openRouterReply = null;
+            try
+            {
+                openRouterReply = ExtractText(responseBody);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "OpenRouter comment reply response could not be parsed for page {PageId}, comment {CommentId}.",
+                    context.Page.PageId,
+                    context.Event.CommentId);
+            }
+
+            var reply = CleanReply(openRouterReply);
             if (string.IsNullOrWhiteSpace(reply))
             {
-                throw new InvalidOperationException("OpenRouter returned an empty reply.");
+                return BuildFallbackReply(context, "OpenRouter returned an empty reply");
             }
 
             return reply;
@@ -216,6 +237,116 @@ namespace Smapi.API.Services
             }
 
             return reply.Length <= 2000 ? reply : reply[..2000].Trim();
+        }
+
+        private string BuildFallbackReply(FacebookCommentReplyContext context, string reason)
+        {
+            _logger.LogWarning(
+                "Using fallback Facebook comment reply because {Reason}. Page {PageId}, comment {CommentId}.",
+                reason,
+                context.Page.PageId,
+                context.Event.CommentId);
+
+            var comment = context.Event.CommentText?.Trim() ?? string.Empty;
+            var preferredLanguage = ResolveReplyLanguage(comment, context.Setting.Language);
+
+            if (preferredLanguage == "fr")
+            {
+                if (ContainsAny(comment, "suite", "partie", "parti", "p2", "p3", "part 2", "part 3", "svp", "svpl", "prochaine"))
+                {
+                    return "La suite arrive bientôt, restez connectés 😊";
+                }
+
+                if (LooksLikeShortReaction(comment))
+                {
+                    return "Merci pour votre soutien, ça nous fait vraiment plaisir 😊";
+                }
+
+                if (comment.Contains('?', StringComparison.Ordinal))
+                {
+                    return "Merci pour votre commentaire, on vous répond très bientôt 😊";
+                }
+
+                return "Merci pour votre commentaire, restez avec nous pour la suite 😊";
+            }
+
+            if (ContainsAny(comment, "part 2", "part 3", "next", "more", "continue", "episode", "please"))
+            {
+                return "The next part is coming soon, stay connected 😊";
+            }
+
+            if (LooksLikeShortReaction(comment))
+            {
+                return "Thanks for the love, we’re so happy the story touched you 😊";
+            }
+
+            if (comment.Contains('?', StringComparison.Ordinal))
+            {
+                return "Thanks for your comment, we’ll get back to you soon 😊";
+            }
+
+            return "Thanks for your comment, stay with us for the next part 😊";
+        }
+
+        private static bool ShouldUseFallback(HttpStatusCode statusCode)
+        {
+            var numericStatusCode = (int)statusCode;
+            return statusCode == HttpStatusCode.TooManyRequests
+                || numericStatusCode >= 500;
+        }
+
+        private static string ResolveReplyLanguage(string comment, string? configuredLanguage)
+        {
+            if (LooksFrench(comment))
+            {
+                return "fr";
+            }
+
+            if (!string.IsNullOrWhiteSpace(configuredLanguage)
+                && configuredLanguage.Contains("french", StringComparison.OrdinalIgnoreCase))
+            {
+                return "fr";
+            }
+
+            return "en";
+        }
+
+        private static bool LooksFrench(string value)
+        {
+            return ContainsAny(
+                value,
+                "suite",
+                "partie",
+                "parti",
+                "svp",
+                "svpl",
+                "merci",
+                "bonjour",
+                "prochaine",
+                "histoire",
+                "j'adore",
+                "j’aime",
+                "j'aime",
+                "ça",
+                "très",
+                "où",
+                "é",
+                "è",
+                "ê",
+                "à",
+                "ç");
+        }
+
+        private static bool LooksLikeShortReaction(string value)
+        {
+            var lettersAndDigits = value.Count(char.IsLetterOrDigit);
+            return lettersAndDigits <= 12
+                || ContainsAny(value, "❤️", "😍", "🥰", "😊", "😭", "😂", "😮", "love", "j'adore", "merci");
+        }
+
+        private static bool ContainsAny(string value, params string[] candidates)
+        {
+            return candidates.Any(candidate => value.Contains(candidate, StringComparison.OrdinalIgnoreCase));
         }
 
         private static string TrimForLog(string value)
