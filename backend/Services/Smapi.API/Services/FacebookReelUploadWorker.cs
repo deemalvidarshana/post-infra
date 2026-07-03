@@ -141,6 +141,31 @@ namespace Smapi.API.Services
 
                 job.FacebookVideoId = publishResult.VideoId;
                 job.FacebookPostId = publishResult.PostId;
+
+                if (job.PublishAsStory)
+                {
+                    try
+                    {
+                        var storyResult = await publisher.PublishStoryAsync(
+                            job.PageId,
+                            page.AccessToken,
+                            publishResult.VideoId,
+                            job.GraphApiVersion,
+                            cancellationToken);
+
+                        job.FacebookStoryId = storyResult.StoryId;
+                        job.StoryPublishedAt = DateTime.UtcNow;
+                        job.StoryErrorMessage = null;
+                    }
+                    catch (Exception storyEx)
+                    {
+                        _logger.LogError(storyEx, "Facebook Reel upload job {JobId} published the video but failed to publish the Page Story.", job.Id);
+                        job.FacebookStoryId = null;
+                        job.StoryPublishedAt = null;
+                        job.StoryErrorMessage = TrimForLog(storyEx.Message);
+                    }
+                }
+
                 job.Status = FacebookReelUploadJobStatus.Published;
                 job.CompletedAt = DateTime.UtcNow;
                 job.UpdatedAt = DateTime.UtcNow;

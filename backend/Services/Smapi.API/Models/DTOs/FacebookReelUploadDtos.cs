@@ -42,6 +42,8 @@ namespace Smapi.API.Models.DTOs
 
         [MaxLength(32)]
         public string Platform { get; set; } = "Facebook";
+
+        public bool PublishAsStory { get; set; }
     }
 
     public class CreateFacebookReelUploadBatchRequest
@@ -70,6 +72,8 @@ namespace Smapi.API.Models.DTOs
 
         [MaxLength(32)]
         public string Platform { get; set; } = "Facebook";
+
+        public bool PublishAsStory { get; set; }
     }
 
     public class ResumeFacebookReelUploadJobRequest
@@ -78,6 +82,11 @@ namespace Smapi.API.Models.DTOs
 
         [MaxLength(32)]
         public string? GraphApiVersion { get; set; } = "v24.0";
+    }
+
+    public class UpdateFacebookReelUploadStoryRequest
+    {
+        public bool PublishAsStory { get; set; }
     }
 
     public class FacebookReelUploadBatchResponse
@@ -128,6 +137,14 @@ namespace Smapi.API.Models.DTOs
         public string? FacebookVideoId { get; set; }
 
         public string? FacebookPostId { get; set; }
+
+        public bool PublishAsStory { get; set; }
+
+        public string? FacebookStoryId { get; set; }
+
+        public DateTime? StoryPublishedAt { get; set; }
+
+        public string? StoryErrorMessage { get; set; }
 
         public string? ErrorMessage { get; set; }
 

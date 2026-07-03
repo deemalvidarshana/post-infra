@@ -3,6 +3,7 @@ using System.Text.Json;
 namespace Smapi.API.Services
 {
     public record FacebookReelPublishResult(string VideoId, string? PostId);
+    public record FacebookStoryPublishResult(string? StoryId);
 
     public interface IFacebookReelsPublisher
     {
@@ -11,6 +12,13 @@ namespace Smapi.API.Services
             string pageAccessToken,
             string videoFilePath,
             string? caption,
+            string graphApiVersion,
+            CancellationToken cancellationToken);
+
+        Task<FacebookStoryPublishResult> PublishStoryAsync(
+            string pageId,
+            string pageAccessToken,
+            string videoId,
             string graphApiVersion,
             CancellationToken cancellationToken);
     }
@@ -98,6 +106,37 @@ namespace Smapi.API.Services
                 videoId,
                 GetOptionalString(finishJson, "post_id")
                     ?? GetOptionalString(finishJson, "id"));
+        }
+
+        public async Task<FacebookStoryPublishResult> PublishStoryAsync(
+            string pageId,
+            string pageAccessToken,
+            string videoId,
+            string graphApiVersion,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(videoId))
+            {
+                throw new InvalidOperationException("Facebook video ID is required before publishing a Page Story.");
+            }
+
+            var version = NormalizeGraphApiVersion(graphApiVersion);
+            var graphBaseUrl = $"https://graph.facebook.com/{version}";
+            var storyUrl = $"{graphBaseUrl}/{Uri.EscapeDataString(pageId)}/video_stories";
+            _logger.LogInformation("Facebook Page Story publish start. URL: {StoryUrl}, VideoId: {VideoId}", storyUrl, videoId);
+
+            using var storyContent = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["video_id"] = videoId,
+                ["access_token"] = pageAccessToken
+            });
+
+            using var storyResponse = await _httpClient.PostAsync(storyUrl, storyContent, cancellationToken);
+            var storyJson = await ReadJsonAsync(storyResponse, "Facebook Page Story publish", cancellationToken);
+
+            return new FacebookStoryPublishResult(
+                GetOptionalString(storyJson, "post_id")
+                    ?? GetOptionalString(storyJson, "id"));
         }
 
         private static string NormalizeGraphApiVersion(string graphApiVersion)

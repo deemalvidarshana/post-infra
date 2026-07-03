@@ -65,6 +65,15 @@ namespace Smapi.API.Models
         [MaxLength(128)]
         public string? FacebookPostId { get; set; }
 
+        public bool PublishAsStory { get; set; }
+
+        [MaxLength(128)]
+        public string? FacebookStoryId { get; set; }
+
+        public DateTime? StoryPublishedAt { get; set; }
+
+        public string? StoryErrorMessage { get; set; }
+
         public string? ErrorMessage { get; set; }
 
         public int Attempts { get; set; }

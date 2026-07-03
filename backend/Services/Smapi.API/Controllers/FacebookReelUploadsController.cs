@@ -76,6 +76,9 @@ namespace Smapi.API.Controllers
 
             job.Status = FacebookReelUploadJobStatus.Queued;
             job.ErrorMessage = null;
+            job.FacebookStoryId = null;
+            job.StoryPublishedAt = null;
+            job.StoryErrorMessage = null;
             job.Attempts = 0;
             job.ScheduledFor = DateTime.UtcNow; // Trigger immediately
             job.UpdatedAt = DateTime.UtcNow;
@@ -262,6 +265,41 @@ namespace Smapi.API.Controllers
             });
         }
 
+        [HttpPatch("{id}/story")]
+        public async Task<IActionResult> UpdateStoryPublishing(
+            int id,
+            [FromBody] UpdateFacebookReelUploadStoryRequest request,
+            CancellationToken cancellationToken)
+        {
+            var job = await _context.FacebookReelUploadJobs.FindAsync(new object[] { id }, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(new { success = false, message = "Upload job not found." });
+            }
+
+            if (job.Status is not (FacebookReelUploadJobStatus.Queued or FacebookReelUploadJobStatus.Paused))
+            {
+                return BadRequest(new { success = false, message = "Story publishing can only be changed before the job is published." });
+            }
+
+            job.PublishAsStory = request.PublishAsStory;
+            job.FacebookStoryId = null;
+            job.StoryPublishedAt = null;
+            job.StoryErrorMessage = null;
+            job.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                message = job.PublishAsStory
+                    ? $"Upload job #{job.Id} will also publish as a Facebook Story."
+                    : $"Facebook Story publishing disabled for upload job #{job.Id}.",
+                job = ToResponse(job)
+            });
+        }
+
         [HttpPost]
         public async Task<ActionResult<FacebookReelUploadJobResponse>> CreateJob(
             [FromBody] CreateFacebookReelUploadJobRequest request,
@@ -362,6 +400,7 @@ namespace Smapi.API.Controllers
                 S3Region = scrapedPost?.S3Region,
                 Status = FacebookReelUploadJobStatus.Queued,
                 GraphApiVersion = request.GraphApiVersion,
+                PublishAsStory = request.PublishAsStory,
                 ScheduledFor = DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
@@ -544,6 +583,7 @@ namespace Smapi.API.Controllers
                     S3Region = post.S3Region,
                     Status = FacebookReelUploadJobStatus.Queued,
                     GraphApiVersion = request.GraphApiVersion,
+                    PublishAsStory = request.PublishAsStory,
                     ScheduledFor = scheduledFor,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
@@ -618,6 +658,10 @@ namespace Smapi.API.Controllers
                 GraphApiVersion = job.GraphApiVersion,
                 FacebookVideoId = job.FacebookVideoId,
                 FacebookPostId = job.FacebookPostId,
+                PublishAsStory = job.PublishAsStory,
+                FacebookStoryId = job.FacebookStoryId,
+                StoryPublishedAt = job.StoryPublishedAt,
+                StoryErrorMessage = job.StoryErrorMessage,
                 ErrorMessage = job.ErrorMessage,
                 Attempts = job.Attempts,
                 ScheduledFor = job.ScheduledFor,

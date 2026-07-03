@@ -41,6 +41,10 @@ interface UploadJob {
   graphApiVersion: string;
   facebookVideoId?: string;
   facebookPostId?: string;
+  publishAsStory?: boolean;
+  facebookStoryId?: string;
+  storyPublishedAt?: string;
+  storyErrorMessage?: string;
   errorMessage?: string;
   scheduledFor?: string;
   createdAt: string;
@@ -77,6 +81,7 @@ export default function QueuePage() {
   const [isDeletingAllVideos, setIsDeletingAllVideos] = useState(false);
   const [pausingJobId, setPausingJobId] = useState<number | null>(null);
   const [startingJobId, setStartingJobId] = useState<number | null>(null);
+  const [storySavingJobId, setStorySavingJobId] = useState<number | null>(null);
   const [jobTimeEdits, setJobTimeEdits] = useState<Record<number, string>>({});
   const [publishForm, setPublishForm] = useState({
     graphApiVersion: "v24.0"
@@ -567,6 +572,40 @@ export default function QueuePage() {
     }
   };
 
+  const handleStoryToggleJob = async (job: UploadJob, publishAsStory: boolean) => {
+    if (!canChangeStoryPublishing(job)) {
+      setMessage("Story publishing can only be changed before the job is published.");
+      return;
+    }
+
+    setMessage("");
+    setStorySavingJobId(job.id);
+
+    try {
+      const response = await fetch(`/api/smapi/FacebookReelUploads/${job.id}/story`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publishAsStory })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data?.success) {
+        setMessage(data?.message || `Story update failed with status ${response.status}.`);
+        return;
+      }
+
+      if (data.job) {
+        setJobs((previousJobs) => previousJobs.map((item) => item.id === job.id ? data.job : item));
+      }
+
+      setMessage(data.message || `Story publishing ${publishAsStory ? "enabled" : "disabled"} for job #${job.id}.`);
+    } catch {
+      setMessage("Could not connect to the backend server.");
+    } finally {
+      setStorySavingJobId(null);
+    }
+  };
+
   const handleDailyPostCountChange = (value: string) => {
     setScheduleForm((current) => ({ ...current, dailyPostCount: value }));
 
@@ -824,9 +863,10 @@ export default function QueuePage() {
         </div>
 
         <div className="rounded-lg border border-white/5 overflow-hidden">
-          <div className="hidden md:grid grid-cols-[104px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+          <div className="hidden md:grid grid-cols-[104px_130px_120px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Job</span>
             <span>Status</span>
+            <span>Story</span>
             <span>Scheduled</span>
             <span>Queued</span>
             <span>Completed</span>
@@ -834,7 +874,7 @@ export default function QueuePage() {
             <span>Source</span>
           </div>
           {visibleJobs.length > 0 ? visibleJobs.map((job) => (
-            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
+            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_120px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-bold text-white">#{job.id}</span>
                 {job.status === "Queued" && (
@@ -890,6 +930,31 @@ export default function QueuePage() {
               <span className={`inline-flex w-fit items-center rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(job.status)}`}>
                 {job.status}
               </span>
+              <div className="flex flex-col gap-1">
+                <div className="inline-flex items-center gap-2">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(job.publishAsStory)}
+                    onClick={() => void handleStoryToggleJob(job, !job.publishAsStory)}
+                    disabled={!canChangeStoryPublishing(job) || storySavingJobId === job.id}
+                    className={`relative h-5 w-9 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${job.publishAsStory ? "border-emerald-400/40 bg-emerald-500/30" : "border-white/10 bg-white/10"}`}
+                  >
+                    <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${job.publishAsStory ? "translate-x-4" : "translate-x-0.5"}`} />
+                  </button>
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${job.publishAsStory ? "text-emerald-200" : "text-neutral-500"}`}>
+                    {storySavingJobId === job.id ? "Saving" : job.publishAsStory ? "On" : "Off"}
+                  </span>
+                </div>
+                {job.storyPublishedAt && (
+                  <span className="text-[10px] text-emerald-300">Story published</span>
+                )}
+                {job.storyErrorMessage && (
+                  <span className="line-clamp-2 text-[10px] text-amber-300" title={job.storyErrorMessage}>
+                    Story failed
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-blue-200">{formatDateTime(job.scheduledFor)}</span>
               <span className="text-xs text-neutral-500">{formatDateTime(job.createdAt)}</span>
               <span className="text-xs text-neutral-500">{formatDateTime(job.completedAt)}</span>
@@ -944,6 +1009,10 @@ function mergeJobsById(existingJobs: UploadJob[], incomingJobs: UploadJob[]) {
 
 function uniqueJobsById(jobs: UploadJob[]) {
   return mergeJobsById([], jobs);
+}
+
+function canChangeStoryPublishing(job: UploadJob) {
+  return job.status === "Queued" || job.status === "Paused";
 }
 
 function getSortTime(value?: string) {
