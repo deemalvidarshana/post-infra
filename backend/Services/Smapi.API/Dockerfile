@@ -23,6 +23,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         ffmpeg \
+        postgresql-client \
         python3 \
         python3-venv \
     && python3 -m venv /opt/yt-dlp \

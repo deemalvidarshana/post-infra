@@ -47,6 +47,14 @@ export async function DELETE(request: Request, context: RouteContext) {
 async function proxySmapiRequest(request: Request, context: RouteContext) {
   const params = await Promise.resolve(context.params);
   const path = params.path?.map(encodeURIComponent).join("/") ?? "";
+  const controllerName = params.path?.[0]?.toLowerCase();
+  if (controllerName === "backup") {
+    return NextResponse.json(
+      { success: false, message: "Backup downloads must use the protected backup route." },
+      { status: 403 }
+    );
+  }
+
   const incomingUrl = new URL(request.url);
   const targetUrl = `${SMAPI_BASE_URL.replace(/\/$/, "")}/${path}${incomingUrl.search}`;
   const controller = new AbortController();
@@ -61,8 +69,7 @@ async function proxySmapiRequest(request: Request, context: RouteContext) {
       signal: controller.signal,
     });
 
-    const responseBody = await response.arrayBuffer();
-    return new NextResponse(responseBody, {
+    return new NextResponse(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers: buildResponseHeaders(response.headers),

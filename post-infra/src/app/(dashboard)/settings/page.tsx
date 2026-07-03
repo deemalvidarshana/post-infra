@@ -355,6 +355,56 @@ export default function SettingsPage() {
       </section>
 
       <section>
+        <div className="glass-panel rounded-xl border border-white/5 p-6 space-y-5">
+          <div>
+            <h2 className="text-lg font-bold text-white">Backup & Migration</h2>
+            <p className="text-sm text-neutral-500 mt-1">
+              Download a portable backup before moving this project to another VPS.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-white/5 bg-black/30 p-5 space-y-4">
+              <div>
+                <h3 className="font-bold text-white">DB Only Backup</h3>
+                <p className="text-sm text-neutral-500 mt-1">
+                  Saves pages, Meta apps, queue jobs, comments, AI settings, API keys, and tokens. Videos are not included.
+                </p>
+              </div>
+              <a
+                href="/api/backups/download?type=db-only"
+                className="inline-flex w-full items-center justify-center gap-3 rounded-lg bg-blue-600 px-4 py-4 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition-all hover:bg-blue-500"
+              >
+                <span className="material-symbols-outlined text-sm">database</span>
+                Download DB Only
+              </a>
+            </div>
+
+            <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-5 space-y-4">
+              <div>
+                <h3 className="font-bold text-white">Full Backup</h3>
+                <p className="text-sm text-neutral-500 mt-1">
+                  Saves the database plus locally downloaded videos. Use this if you need the new VPS to have the same files immediately.
+                </p>
+              </div>
+              <a
+                href="/api/backups/download?type=full"
+                className="inline-flex w-full items-center justify-center gap-3 rounded-lg bg-emerald-600 px-4 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-600/20 transition-all hover:bg-emerald-500"
+              >
+                <span className="material-symbols-outlined text-sm">archive</span>
+                Download Full Backup
+              </a>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-amber-500/10 bg-amber-500/5 px-4 py-4 text-sm text-amber-100">
+            Keep backup files private. They can contain Facebook page access tokens, Meta app secrets, AI provider keys, and Apify keys.
+            DB-only is usually enough when source video links can be downloaded again during publish time.
+          </div>
+        </div>
+      </section>
+
+      <section>
         <form onSubmit={saveAiProviderSettings} className="glass-panel rounded-xl border border-white/5 p-6 space-y-5">
           <div>
             <h2 className="text-lg font-bold text-white">AI Provider</h2>
