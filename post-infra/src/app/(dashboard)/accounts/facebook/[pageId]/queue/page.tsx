@@ -863,7 +863,7 @@ export default function QueuePage() {
         </div>
 
         <div className="rounded-lg border border-white/5 overflow-hidden">
-          <div className="hidden md:grid grid-cols-[104px_130px_120px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+          <div className="hidden md:grid grid-cols-[104px_130px_136px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Job</span>
             <span>Status</span>
             <span>Story</span>
@@ -874,7 +874,7 @@ export default function QueuePage() {
             <span>Source</span>
           </div>
           {visibleJobs.length > 0 ? visibleJobs.map((job) => (
-            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_120px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
+            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_136px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-bold text-white">#{job.id}</span>
                 {job.status === "Queued" && (
@@ -930,22 +930,21 @@ export default function QueuePage() {
               <span className={`inline-flex w-fit items-center rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(job.status)}`}>
                 {job.status}
               </span>
-              <div className="flex flex-col gap-1">
-                <div className="inline-flex items-center gap-2">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={Boolean(job.publishAsStory)}
-                    onClick={() => void handleStoryToggleJob(job, !job.publishAsStory)}
-                    disabled={!canChangeStoryPublishing(job) || storySavingJobId === job.id}
-                    className={`relative h-5 w-9 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${job.publishAsStory ? "border-emerald-400/40 bg-emerald-500/30" : "border-white/10 bg-white/10"}`}
-                  >
-                    <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform ${job.publishAsStory ? "translate-x-4" : "translate-x-0.5"}`} />
-                  </button>
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${job.publishAsStory ? "text-emerald-200" : "text-neutral-500"}`}>
-                    {storySavingJobId === job.id ? "Saving" : job.publishAsStory ? "On" : "Off"}
+              <div className="flex flex-col items-start gap-1">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(job.publishAsStory)}
+                  aria-label={`Publish job #${job.id} as Facebook Story`}
+                  onClick={() => void handleStoryToggleJob(job, !job.publishAsStory)}
+                  disabled={!canChangeStoryPublishing(job) || storySavingJobId === job.id}
+                  className={`inline-flex min-w-[82px] items-center justify-between gap-2 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${job.publishAsStory ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-200" : "border-white/10 bg-white/5 text-neutral-500"}`}
+                >
+                  <span className={`relative h-4 w-7 rounded-full transition-colors ${job.publishAsStory ? "bg-emerald-500/80" : "bg-neutral-700"}`}>
+                    <span className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${job.publishAsStory ? "translate-x-3.5" : "translate-x-0"}`} />
                   </span>
-                </div>
+                  <span>{storySavingJobId === job.id ? "Saving" : job.publishAsStory ? "On" : "Off"}</span>
+                </button>
                 {job.storyPublishedAt && (
                   <span className="text-[10px] text-emerald-300">Story published</span>
                 )}
