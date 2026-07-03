@@ -102,10 +102,48 @@ namespace Smapi.API.Services
                     uploadVideoPath = storage.GetAbsolutePath(job.S3Key);
                     if (!File.Exists(uploadVideoPath))
                     {
-                        throw new FileNotFoundException("Downloaded scraper video file was not found.", uploadVideoPath);
-                    }
+                        _logger.LogWarning(
+                            "Reel upload job {JobId} could not find scraper download at {VideoPath}. Downloading the source again before publishing.",
+                            job.Id,
+                            uploadVideoPath);
 
-                    _logger.LogInformation("Reel upload job {JobId} using existing scraper download at {VideoPath}.", job.Id, uploadVideoPath);
+                        job.Status = FacebookReelUploadJobStatus.Downloading;
+                        job.S3Key = null;
+                        job.S3Bucket = null;
+                        job.S3Region = null;
+                        job.S3EndpointUrl = null;
+                        job.UpdatedAt = DateTime.UtcNow;
+                        await dbContext.SaveChangesAsync(cancellationToken);
+
+                        var recoveredVideoPath = await downloader.DownloadAsync(
+                            job.VideoSourceUrl,
+                            tempDirectory,
+                            cancellationToken);
+                        var recoveredStorageKey = storage.BuildStorageKey(
+                            page.PageName,
+                            job.PageId,
+                            "publishing-queue",
+                            job.Id);
+                        var recoveredStorageResult = await storage.StoreAsync(
+                            recoveredVideoPath,
+                            recoveredStorageKey,
+                            cancellationToken);
+
+                        job.S3Key = recoveredStorageResult.Key;
+                        job.Status = FacebookReelUploadJobStatus.Publishing;
+                        job.UpdatedAt = DateTime.UtcNow;
+                        await dbContext.SaveChangesAsync(cancellationToken);
+
+                        uploadVideoPath = recoveredStorageResult.AbsolutePath;
+                        _logger.LogInformation(
+                            "Reel upload job {JobId} recovered its missing download at {VideoPath}.",
+                            job.Id,
+                            uploadVideoPath);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Reel upload job {JobId} using existing scraper download at {VideoPath}.", job.Id, uploadVideoPath);
+                    }
                 }
                 else
                 {
