@@ -862,8 +862,14 @@ export default function QueuePage() {
           </div>
         </div>
 
+        <p className="mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-neutral-500 md:justify-end">
+          <span className="material-symbols-outlined text-[13px]">swipe</span>
+          Scroll horizontally to view every column
+        </p>
         <div className="rounded-lg border border-white/5 overflow-hidden">
-          <div className="hidden md:grid grid-cols-[104px_130px_136px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
+          <div className="overflow-x-auto pb-2 [scrollbar-color:rgba(96,165,250,0.45)_rgba(255,255,255,0.06)] [scrollbar-width:thin]">
+            <div className="md:min-w-[1480px]">
+          <div className="hidden md:grid grid-cols-[104px_130px_136px_150px_140px_140px_minmax(260px,1fr)_280px] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Job</span>
             <span>Status</span>
             <span>Story</span>
@@ -871,10 +877,10 @@ export default function QueuePage() {
             <span>Queued</span>
             <span>Completed</span>
             <span>Caption</span>
-            <span>Source</span>
+            <span>Source Link</span>
           </div>
           {visibleJobs.length > 0 ? visibleJobs.map((job) => (
-            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_136px_150px_140px_140px_minmax(220px,1fr)_minmax(180px,0.8fr)] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
+            <div key={job.id} className="grid grid-cols-1 md:grid-cols-[104px_130px_136px_150px_140px_140px_minmax(260px,1fr)_280px] gap-3 md:gap-4 bg-black/20 px-4 py-3 border-t border-white/5">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-bold text-white">#{job.id}</span>
                 {job.status === "Queued" && (
@@ -972,15 +978,25 @@ export default function QueuePage() {
                 )}
               </div>
               <div className="min-w-0 text-xs text-neutral-500">
-                <a href={job.videoSourceUrl} target="_blank" rel="noreferrer" className="block truncate text-neutral-300 hover:text-white">
-                  {job.videoSourceUrl}
+                <a
+                  href={job.videoSourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open ${sourcePlatform} source video for job #${job.id}`}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-blue-400/20 bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-300 transition-colors hover:border-blue-300/40 hover:bg-blue-500/20 hover:text-blue-100"
+                >
+                  <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                  <span className="truncate">Open {sourcePlatform} video</span>
                 </a>
-                <p className="truncate">{job.s3Key || "Pending local download"}</p>
+                <p className="mt-1 truncate text-neutral-400" title={job.videoSourceUrl}>{job.videoSourceUrl}</p>
+                <p className="truncate text-neutral-600" title={job.s3Key}>{job.s3Key || "Pending local download"}</p>
               </div>
             </div>
           )) : (
             <div className="px-4 py-10 text-center text-sm text-neutral-500">No jobs yet.</div>
           )}
+            </div>
+          </div>
         </div>
       </section>
     </div>
