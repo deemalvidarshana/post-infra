@@ -927,7 +927,7 @@ export default function QueuePage() {
                   {deletingJobId === job.id ? "Deleting" : "Delete"}
                 </button>
               </div>
-              <span className={`inline-flex w-fit items-center rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(job.status)}`}>
+              <span className={`inline-flex w-fit self-start items-center rounded px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${statusClass(job.status)}`}>
                 {job.status}
               </span>
               <div className="flex flex-col items-start gap-1">
