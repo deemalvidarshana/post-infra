@@ -9,3 +9,15 @@
         Referrer-Policy "strict-origin-when-cross-origin"
     }
 }
+
+{$JENKINS_DOMAIN:jenkins.smautomate.duckdns.org} {
+    encode zstd gzip
+
+    reverse_proxy jenkins:8080
+
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}

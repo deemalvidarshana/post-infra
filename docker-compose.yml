@@ -6,6 +6,7 @@ services:
     container_name: sm-caddy
     environment:
       - APP_DOMAIN=${APP_DOMAIN:-smautomate.duckdns.org}
+      - JENKINS_DOMAIN=${JENKINS_DOMAIN:-jenkins.smautomate.duckdns.org}
     ports:
       - "80:80"
       - "443:443"
@@ -15,6 +16,23 @@ services:
       - caddy_config:/config
     depends_on:
       - frontend
+      - jenkins
+    restart: always
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk21
+    container_name: sm-jenkins
+    user: root
+    environment:
+      - JENKINS_HOME=/var/lib/sm-jenkins
+    expose:
+      - "8080"
+    volumes:
+      - jenkins_home:/var/lib/sm-jenkins
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins/docker-compose:/usr/libexec/docker/cli-plugins/docker-compose:ro
+      - /usr/libexec/docker/cli-plugins/docker-compose:/usr/local/bin/docker-compose:ro
     restart: always
 
   db:
@@ -91,3 +109,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  jenkins_home:
