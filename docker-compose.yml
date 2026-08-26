@@ -72,7 +72,7 @@ services:
       - FacebookWebhook__VerifyToken=${FACEBOOK_WEBHOOK_VERIFY_TOKEN:-}
       - FacebookWebhook__AppSecret=${FACEBOOK_APP_SECRET:-}
     volumes:
-      - ./downloads:/app/downloads
+      - ${DOWNLOADS_HOST_PATH:-./downloads}:/app/downloads
     depends_on:
       - db
     ports:
