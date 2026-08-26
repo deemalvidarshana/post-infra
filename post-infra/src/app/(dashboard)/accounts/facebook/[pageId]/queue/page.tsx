@@ -82,6 +82,7 @@ export default function QueuePage() {
   const [pausingJobId, setPausingJobId] = useState<number | null>(null);
   const [startingJobId, setStartingJobId] = useState<number | null>(null);
   const [storySavingJobId, setStorySavingJobId] = useState<number | null>(null);
+  const [isSavingAllStories, setIsSavingAllStories] = useState(false);
   const [jobTimeEdits, setJobTimeEdits] = useState<Record<number, string>>({});
   const [publishForm, setPublishForm] = useState({
     graphApiVersion: "v24.0"
@@ -99,6 +100,12 @@ export default function QueuePage() {
     const pageJobs = routePageId ? jobs.filter((job) => job.pageId === routePageId) : jobs;
     return [...pageJobs].sort((first, second) => compareSchedule(first, second));
   }, [jobs, routePageId]);
+  const storyToggleableJobs = useMemo(
+    () => visibleJobs.filter(canChangeStoryPublishing),
+    [visibleJobs]
+  );
+  const areAllStoryToggleableJobsEnabled = storyToggleableJobs.length > 0
+    && storyToggleableJobs.every((job) => Boolean(job.publishAsStory));
   const activeJobPostIds = useMemo(
     () => new Set(visibleJobs
       .filter((job) => job.facebookPostUrlId && job.status !== "Failed")
@@ -606,6 +613,66 @@ export default function QueuePage() {
     }
   };
 
+  const handleStoryToggleAll = async () => {
+    if (storyToggleableJobs.length === 0) {
+      setMessage("No queued or paused jobs can be changed for Story publishing.");
+      return;
+    }
+
+    const publishAsStory = !areAllStoryToggleableJobsEnabled;
+    const jobsToUpdate = storyToggleableJobs.filter((job) => Boolean(job.publishAsStory) !== publishAsStory);
+
+    if (jobsToUpdate.length === 0) {
+      setMessage(`Story publishing is already ${publishAsStory ? "enabled" : "disabled"} for every queued job.`);
+      return;
+    }
+
+    setMessage("");
+    setIsSavingAllStories(true);
+
+    const updatedJobs: UploadJob[] = [];
+
+    try {
+      for (const job of jobsToUpdate) {
+        setStorySavingJobId(job.id);
+
+        const response = await fetch(`/api/smapi/FacebookReelUploads/${job.id}/story`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ publishAsStory })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data?.success) {
+          throw new Error(data?.message || `Story update failed for job #${job.id} with status ${response.status}.`);
+        }
+
+        if (data.job) {
+          updatedJobs.push(data.job);
+        }
+      }
+
+      if (updatedJobs.length > 0) {
+        const updatedJobsById = new Map(updatedJobs.map((job) => [job.id, job]));
+        setJobs((previousJobs) => previousJobs.map((job) => updatedJobsById.get(job.id) ?? job));
+      }
+
+      setMessage(
+        `Story publishing ${publishAsStory ? "enabled" : "disabled"} for ${jobsToUpdate.length} queued job${jobsToUpdate.length === 1 ? "" : "s"}.`
+      );
+    } catch (error) {
+      if (updatedJobs.length > 0) {
+        const updatedJobsById = new Map(updatedJobs.map((job) => [job.id, job]));
+        setJobs((previousJobs) => previousJobs.map((job) => updatedJobsById.get(job.id) ?? job));
+      }
+
+      setMessage(error instanceof Error ? error.message : "Could not update Story publishing for all queued jobs.");
+    } finally {
+      setIsSavingAllStories(false);
+      setStorySavingJobId(null);
+    }
+  };
+
   const handleDailyPostCountChange = (value: string) => {
     setScheduleForm((current) => ({ ...current, dailyPostCount: value }));
 
@@ -872,7 +939,24 @@ export default function QueuePage() {
           <div className="hidden md:grid grid-cols-[104px_130px_136px_150px_140px_140px_minmax(260px,1fr)_280px] gap-4 bg-black/40 px-4 py-3 text-[10px] uppercase tracking-widest font-bold text-neutral-500">
             <span>Job</span>
             <span>Status</span>
-            <span>Story</span>
+            <div className="flex flex-col items-start gap-1">
+              <span>Story</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={areAllStoryToggleableJobsEnabled}
+                aria-label={`${areAllStoryToggleableJobsEnabled ? "Disable" : "Enable"} Story publishing for all queued jobs`}
+                onClick={() => void handleStoryToggleAll()}
+                disabled={storyToggleableJobs.length === 0 || isSavingAllStories}
+                className={`inline-flex min-w-[82px] items-center justify-between gap-2 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${areAllStoryToggleableJobsEnabled ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-200" : "border-white/10 bg-white/5 text-neutral-500"}`}
+                title={storyToggleableJobs.length === 0 ? "No queued jobs can be changed" : `${areAllStoryToggleableJobsEnabled ? "Disable" : "Enable"} Story publishing for all queued jobs`}
+              >
+                <span className={`relative h-4 w-7 rounded-full transition-colors ${areAllStoryToggleableJobsEnabled ? "bg-emerald-500/80" : "bg-neutral-700"}`}>
+                  <span className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${areAllStoryToggleableJobsEnabled ? "translate-x-3.5" : "translate-x-0"}`} />
+                </span>
+                <span>{isSavingAllStories ? "Saving" : areAllStoryToggleableJobsEnabled ? "On" : "Off"}</span>
+              </button>
+            </div>
             <span>Scheduled</span>
             <span>Queued</span>
             <span>Completed</span>
@@ -943,7 +1027,7 @@ export default function QueuePage() {
                   aria-checked={Boolean(job.publishAsStory)}
                   aria-label={`Publish job #${job.id} as Facebook Story`}
                   onClick={() => void handleStoryToggleJob(job, !job.publishAsStory)}
-                  disabled={!canChangeStoryPublishing(job) || storySavingJobId === job.id}
+                  disabled={!canChangeStoryPublishing(job) || storySavingJobId === job.id || isSavingAllStories}
                   className={`inline-flex min-w-[82px] items-center justify-between gap-2 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${job.publishAsStory ? "border-emerald-400/35 bg-emerald-500/15 text-emerald-200" : "border-white/10 bg-white/5 text-neutral-500"}`}
                 >
                   <span className={`relative h-4 w-7 rounded-full transition-colors ${job.publishAsStory ? "bg-emerald-500/80" : "bg-neutral-700"}`}>

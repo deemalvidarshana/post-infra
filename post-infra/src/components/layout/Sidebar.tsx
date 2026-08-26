@@ -10,6 +10,7 @@ const navItems = [
   { name: 'Facebook', href: '/accounts/facebook', icon: 'public' },
   { name: 'Instagram', href: '/accounts/instagram', icon: 'photo_camera' },
   { name: 'TikTok', href: '/accounts/tiktok', icon: 'music_note' },
+  { name: 'Storage', href: '/storage', icon: 'folder_managed' },
   { name: 'Settings', href: '/settings', icon: 'settings' },
 ];
 

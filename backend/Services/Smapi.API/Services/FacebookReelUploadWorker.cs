@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using Smapi.API.Data;
 using Smapi.API.Models;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +9,8 @@ namespace Smapi.API.Services
     public class FacebookReelUploadWorker : BackgroundService
     {
         private static readonly TimeSpan DueJobPollInterval = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan PublishedVideoRetention = TimeSpan.FromMinutes(5);
+        private const double StorySegmentSeconds = 30d;
         private readonly IFacebookReelUploadQueue _queue;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<FacebookReelUploadWorker> _logger;
@@ -184,16 +188,40 @@ namespace Smapi.API.Services
                 {
                     try
                     {
-                        var storyResult = await publisher.PublishStoryAsync(
-                            job.PageId,
-                            page.AccessToken,
-                            publishResult.VideoId,
-                            job.GraphApiVersion,
-                            cancellationToken);
+                        var storyVideoPaths = await PrepareStoryVideoPathsAsync(uploadVideoPath, tempDirectory, cancellationToken);
+                        var storyIds = new List<string>();
 
-                        job.FacebookStoryId = storyResult.StoryId;
+                        for (var storyIndex = 0; storyIndex < storyVideoPaths.Count; storyIndex++)
+                        {
+                            var storyVideoPath = storyVideoPaths[storyIndex];
+                            _logger.LogInformation(
+                                "Facebook Reel upload job {JobId} publishing Page Story segment {Segment}/{Total}. Path: {Path}",
+                                job.Id,
+                                storyIndex + 1,
+                                storyVideoPaths.Count,
+                                storyVideoPath);
+
+                            var storyResult = await publisher.PublishStoryAsync(
+                                job.PageId,
+                                page.AccessToken,
+                                storyVideoPath,
+                                job.GraphApiVersion,
+                                cancellationToken);
+
+                            if (!string.IsNullOrWhiteSpace(storyResult.StoryId))
+                            {
+                                storyIds.Add(storyResult.StoryId);
+                            }
+                        }
+
+                        job.FacebookStoryId = storyIds.LastOrDefault();
                         job.StoryPublishedAt = DateTime.UtcNow;
                         job.StoryErrorMessage = null;
+
+                        _logger.LogInformation(
+                            "Facebook Reel upload job {JobId} published {StoryCount} Page Story segment(s).",
+                            job.Id,
+                            storyVideoPaths.Count);
                     }
                     catch (Exception storyEx)
                     {
@@ -207,7 +235,7 @@ namespace Smapi.API.Services
                 job.Status = FacebookReelUploadJobStatus.Published;
                 job.CompletedAt = DateTime.UtcNow;
                 job.UpdatedAt = DateTime.UtcNow;
-                job.RetainUntil = DateTime.UtcNow.AddDays(7);
+                job.RetainUntil = DateTime.UtcNow.Add(PublishedVideoRetention);
                 await dbContext.SaveChangesAsync(cancellationToken);
             }
             catch (Exception ex)
@@ -271,6 +299,163 @@ namespace Smapi.API.Services
             job.UpdatedAt = DateTime.UtcNow;
 
             await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        private async Task<IReadOnlyList<string>> PrepareStoryVideoPathsAsync(
+            string sourceVideoPath,
+            string tempDirectory,
+            CancellationToken cancellationToken)
+        {
+            var durationSeconds = await GetVideoDurationSecondsAsync(sourceVideoPath, cancellationToken);
+            if (durationSeconds <= StorySegmentSeconds + 0.5d)
+            {
+                _logger.LogInformation(
+                    "Story video is {Duration:N1}s; using the original file without splitting.",
+                    durationSeconds);
+                return new[] { sourceVideoPath };
+            }
+
+            var storyDirectory = Path.Combine(tempDirectory, "story-segments");
+            Directory.CreateDirectory(storyDirectory);
+
+            var segmentPaths = new List<string>();
+            for (var startSeconds = 0d; startSeconds < durationSeconds; startSeconds += StorySegmentSeconds)
+            {
+                var remainingSeconds = durationSeconds - startSeconds;
+                if (remainingSeconds < 1d)
+                {
+                    break;
+                }
+
+                var segmentSeconds = Math.Min(StorySegmentSeconds, remainingSeconds);
+                var segmentPath = Path.Combine(storyDirectory, $"story-part-{segmentPaths.Count + 1:000}.mp4");
+                await CreateStorySegmentAsync(
+                    sourceVideoPath,
+                    segmentPath,
+                    startSeconds,
+                    segmentSeconds,
+                    cancellationToken);
+                segmentPaths.Add(segmentPath);
+            }
+
+            if (segmentPaths.Count == 0)
+            {
+                throw new InvalidOperationException("No Facebook Page Story video segments could be created.");
+            }
+
+            _logger.LogInformation(
+                "Prepared {SegmentCount} Facebook Page Story segment(s) from a {Duration:N1}s video.",
+                segmentPaths.Count,
+                durationSeconds);
+
+            return segmentPaths;
+        }
+
+        private async Task<double> GetVideoDurationSecondsAsync(string sourceVideoPath, CancellationToken cancellationToken)
+        {
+            var result = await RunProcessAsync(
+                "ffprobe",
+                new[]
+                {
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    sourceVideoPath
+                },
+                cancellationToken);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"ffprobe failed while reading Story video duration: {TrimForLog(result.Stderr)}");
+            }
+
+            if (!double.TryParse(result.Stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var durationSeconds)
+                || durationSeconds <= 0d)
+            {
+                throw new InvalidOperationException($"ffprobe returned an invalid Story video duration: {TrimForLog(result.Stdout)}");
+            }
+
+            return durationSeconds;
+        }
+
+        private async Task CreateStorySegmentAsync(
+            string sourceVideoPath,
+            string segmentPath,
+            double startSeconds,
+            double segmentSeconds,
+            CancellationToken cancellationToken)
+        {
+            var result = await RunProcessAsync(
+                "ffmpeg",
+                new[]
+                {
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-ss", startSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+                    "-i", sourceVideoPath,
+                    "-t", segmentSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-sn",
+                    "-dn",
+                    "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    "-movflags", "+faststart",
+                    segmentPath
+                },
+                cancellationToken);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"ffmpeg failed while creating a Story segment: {TrimForLog(result.Stderr)}");
+            }
+
+            var segmentInfo = new FileInfo(segmentPath);
+            if (!segmentInfo.Exists || segmentInfo.Length == 0)
+            {
+                throw new InvalidOperationException("ffmpeg created an empty Facebook Page Story segment.");
+            }
+        }
+
+        private static async Task<(int ExitCode, string Stdout, string Stderr)> RunProcessAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            using var process = new Process();
+            process.StartInfo.FileName = fileName;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.CreateNoWindow = true;
+
+            foreach (var argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            try
+            {
+                process.Start();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"{fileName} could not be started.", ex);
+            }
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+
+            return (process.ExitCode, await stdoutTask, await stderrTask);
         }
 
         private static void TryDeleteDirectory(string tempDirectory)

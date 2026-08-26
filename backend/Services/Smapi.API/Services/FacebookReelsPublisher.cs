@@ -18,7 +18,7 @@ namespace Smapi.API.Services
         Task<FacebookStoryPublishResult> PublishStoryAsync(
             string pageId,
             string pageAccessToken,
-            string videoId,
+            string videoFilePath,
             string graphApiVersion,
             CancellationToken cancellationToken);
     }
@@ -111,32 +111,57 @@ namespace Smapi.API.Services
         public async Task<FacebookStoryPublishResult> PublishStoryAsync(
             string pageId,
             string pageAccessToken,
-            string videoId,
+            string videoFilePath,
             string graphApiVersion,
             CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(videoId))
+            if (!File.Exists(videoFilePath))
             {
-                throw new InvalidOperationException("Facebook video ID is required before publishing a Page Story.");
+                throw new FileNotFoundException("Video file for Facebook Page Story upload was not found.", videoFilePath);
             }
 
             var version = NormalizeGraphApiVersion(graphApiVersion);
             var graphBaseUrl = $"https://graph.facebook.com/{version}";
             var storyUrl = $"{graphBaseUrl}/{Uri.EscapeDataString(pageId)}/video_stories";
-            _logger.LogInformation("Facebook Page Story publish start. URL: {StoryUrl}, VideoId: {VideoId}", storyUrl, videoId);
+            _logger.LogInformation("Facebook Page Story upload start. URL: {StoryUrl}", storyUrl);
 
-            using var storyContent = new FormUrlEncodedContent(new Dictionary<string, string>
+            using var startContent = new FormUrlEncodedContent(new Dictionary<string, string>
             {
+                ["upload_phase"] = "start",
+                ["access_token"] = pageAccessToken
+            });
+
+            using var startResponse = await _httpClient.PostAsync(storyUrl, startContent, cancellationToken);
+            var startJson = await ReadJsonAsync(startResponse, "Facebook Page Story upload start", cancellationToken);
+            var videoId = GetRequiredString(startJson, "video_id", "Facebook Page Story upload start");
+            var uploadUrl = GetRequiredString(startJson, "upload_url", "Facebook Page Story upload start");
+
+            var fileInfo = new FileInfo(videoFilePath);
+            await using var fileStream = File.OpenRead(videoFilePath);
+            using var transferRequest = new HttpRequestMessage(HttpMethod.Post, uploadUrl);
+            transferRequest.Headers.TryAddWithoutValidation("Authorization", $"OAuth {pageAccessToken}");
+            transferRequest.Headers.TryAddWithoutValidation("offset", "0");
+            transferRequest.Headers.TryAddWithoutValidation("file_size", fileInfo.Length.ToString());
+            transferRequest.Content = new StreamContent(fileStream);
+            transferRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+
+            using var transferResponse = await _httpClient.SendAsync(transferRequest, cancellationToken);
+            await EnsureSuccessAsync(transferResponse, "Facebook Page Story file transfer", cancellationToken);
+
+            using var finishContent = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["upload_phase"] = "finish",
                 ["video_id"] = videoId,
                 ["access_token"] = pageAccessToken
             });
 
-            using var storyResponse = await _httpClient.PostAsync(storyUrl, storyContent, cancellationToken);
-            var storyJson = await ReadJsonAsync(storyResponse, "Facebook Page Story publish", cancellationToken);
+            using var finishResponse = await _httpClient.PostAsync(storyUrl, finishContent, cancellationToken);
+            var finishJson = await ReadJsonAsync(finishResponse, "Facebook Page Story publish finish", cancellationToken);
 
             return new FacebookStoryPublishResult(
-                GetOptionalString(storyJson, "post_id")
-                    ?? GetOptionalString(storyJson, "id"));
+                GetOptionalString(finishJson, "post_id")
+                    ?? GetOptionalString(finishJson, "id")
+                    ?? videoId);
         }
 
         private static string NormalizeGraphApiVersion(string graphApiVersion)
@@ -158,7 +183,7 @@ namespace Smapi.API.Services
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                throw new InvalidOperationException($"{context} failed with status {(int)response.StatusCode}: {TrimForLog(responseBody)}");
+                throw new InvalidOperationException($"{context} failed with status {(int)response.StatusCode}: {FormatGraphError(responseBody)}");
             }
 
             try
@@ -182,7 +207,7 @@ namespace Smapi.API.Services
             }
 
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"{context} failed with status {(int)response.StatusCode}: {TrimForLog(responseBody)}");
+            throw new InvalidOperationException($"{context} failed with status {(int)response.StatusCode}: {FormatGraphError(responseBody)}");
         }
 
         private static string GetRequiredString(JsonDocument document, string propertyName, string context)
@@ -207,6 +232,72 @@ namespace Smapi.API.Services
         {
             value = value.Trim();
             return value.Length <= 2000 ? value : value[..2000];
+        }
+
+        private static string FormatGraphError(string responseBody)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(responseBody);
+                if (!document.RootElement.TryGetProperty("error", out var error)
+                    || error.ValueKind != JsonValueKind.Object)
+                {
+                    return TrimForLog(responseBody);
+                }
+
+                var message = GetOptionalString(error, "message");
+                var type = GetOptionalString(error, "type");
+                var code = GetOptionalString(error, "code");
+                var subcode = GetOptionalString(error, "error_subcode");
+                var traceId = GetOptionalString(error, "fbtrace_id");
+
+                var parts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    parts.Add(message);
+                }
+
+                if (!string.IsNullOrWhiteSpace(type))
+                {
+                    parts.Add($"type={type}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    parts.Add($"code={code}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(subcode))
+                {
+                    parts.Add($"subcode={subcode}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(traceId))
+                {
+                    parts.Add($"fbtrace_id={traceId}");
+                }
+
+                return parts.Count == 0 ? TrimForLog(responseBody) : TrimForLog(string.Join("; ", parts));
+            }
+            catch (JsonException)
+            {
+                return TrimForLog(responseBody);
+            }
+        }
+
+        private static string? GetOptionalString(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var value))
+            {
+                return null;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.GetRawText(),
+                _ => null
+            };
         }
     }
 }

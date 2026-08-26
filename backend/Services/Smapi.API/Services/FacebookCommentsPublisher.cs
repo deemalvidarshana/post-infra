@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 
 namespace Smapi.API.Services
@@ -9,16 +10,22 @@ namespace Smapi.API.Services
             string pageAccessToken,
             string message,
             string graphApiVersion,
+            string? mentionAuthorId,
+            string? mentionAuthorName,
             CancellationToken cancellationToken);
     }
 
     public class FacebookCommentsPublisher : IFacebookCommentsPublisher
     {
         private readonly HttpClient _httpClient;
+        private readonly ILogger<FacebookCommentsPublisher> _logger;
 
-        public FacebookCommentsPublisher(HttpClient httpClient)
+        public FacebookCommentsPublisher(
+            HttpClient httpClient,
+            ILogger<FacebookCommentsPublisher> logger)
         {
             _httpClient = httpClient;
+            _logger = logger;
         }
 
         public async Task<string?> ReplyToCommentAsync(
@@ -26,15 +33,47 @@ namespace Smapi.API.Services
             string pageAccessToken,
             string message,
             string graphApiVersion,
+            string? mentionAuthorId,
+            string? mentionAuthorName,
             CancellationToken cancellationToken)
         {
             var version = NormalizeGraphApiVersion(graphApiVersion);
-            var url = $"https://graph.facebook.com/{version}/{Uri.EscapeDataString(commentId)}/comments";
+            var escapedCommentId = Uri.EscapeDataString(commentId);
+            var replyUrl = $"https://graph.facebook.com/{version}/{escapedCommentId}/comments";
+            var mentionReplyUrl = $"https://graph.facebook.com/{version}/{escapedCommentId}";
+            var plainMessage = message.Trim();
+            var mentionMessage = BuildMentionMessage(plainMessage, mentionAuthorId, mentionAuthorName);
 
-            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            if (mentionMessage is null)
             {
-                ["message"] = message,
-                ["access_token"] = pageAccessToken
+                return await PostReplyAsync(replyUrl, pageAccessToken, plainMessage, cancellationToken);
+            }
+
+            try
+            {
+                return await PostReplyAsync(mentionReplyUrl, pageAccessToken, mentionMessage, cancellationToken);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Facebook comment mention reply failed for comment {CommentId}; retrying without mention.",
+                    commentId);
+
+                return await PostReplyAsync(replyUrl, pageAccessToken, plainMessage, cancellationToken);
+            }
+        }
+
+        private async Task<string?> PostReplyAsync(
+            string url,
+            string pageAccessToken,
+            string message,
+            CancellationToken cancellationToken)
+        {
+            using var content = JsonContent.Create(new
+            {
+                message,
+                access_token = pageAccessToken
             });
 
             using var response = await _httpClient.PostAsync(url, content, cancellationToken);
@@ -50,6 +89,45 @@ namespace Smapi.API.Services
                 && id.ValueKind == JsonValueKind.String
                     ? id.GetString()
                     : null;
+        }
+
+        private static string? BuildMentionMessage(
+            string message,
+            string? mentionAuthorId,
+            string? mentionAuthorName)
+        {
+            mentionAuthorId = mentionAuthorId?.Trim();
+            if (string.IsNullOrWhiteSpace(mentionAuthorId)
+                || !mentionAuthorId.All(char.IsDigit))
+            {
+                return null;
+            }
+
+            message = RemoveLeadingAuthorName(message, mentionAuthorName);
+            // Meta's Comments and @mentions API expects the mention token after
+            // the reply text (for example: "your_message_text@[PSID]").
+            return string.IsNullOrWhiteSpace(message)
+                ? $"@[{mentionAuthorId}]"
+                : $"{message} @[{mentionAuthorId}]";
+        }
+
+        private static string RemoveLeadingAuthorName(string message, string? authorName)
+        {
+            message = message.Trim();
+            authorName = authorName?.Trim();
+            if (string.IsNullOrWhiteSpace(message) || string.IsNullOrWhiteSpace(authorName))
+            {
+                return message;
+            }
+
+            if (!message.StartsWith(authorName, StringComparison.OrdinalIgnoreCase))
+            {
+                return message;
+            }
+
+            var remaining = message[authorName.Length..].TrimStart();
+            remaining = remaining.TrimStart('-', ':', ',', '–', '—').TrimStart();
+            return string.IsNullOrWhiteSpace(remaining) ? message : remaining;
         }
 
         private static string NormalizeGraphApiVersion(string graphApiVersion)

@@ -72,6 +72,83 @@ namespace Smapi.API.Controllers
                 .ToListAsync(cancellationToken);
         }
 
+        [HttpGet("facebook/storage-stats")]
+        public async Task<ActionResult<IEnumerable<FacebookPageStorageStatsResponse>>> GetFacebookPageStorageStats(
+            [FromQuery] string? userId,
+            CancellationToken cancellationToken)
+        {
+            userId = string.IsNullOrWhiteSpace(userId) ? null : userId.Trim();
+
+            var postKeysQuery = _context.FacebookPostUrls
+                .AsNoTracking()
+                .Where(post => post.S3Key != null && post.S3Key != "" && post.PageId != null && post.PageId != "");
+
+            var jobKeysQuery = _context.FacebookReelUploadJobs
+                .AsNoTracking()
+                .Where(job => job.S3Key != null && job.S3Key != "" && job.PageId != "");
+
+            if (!string.IsNullOrWhiteSpace(userId))
+            {
+                postKeysQuery = postKeysQuery.Where(post => post.UserId == userId);
+                jobKeysQuery = jobKeysQuery.Where(job => job.UserId == userId);
+            }
+
+            var storageKeys = (await postKeysQuery
+                    .Select(post => new PageStorageKey(post.UserId, post.PageId!, post.S3Key!))
+                    .ToListAsync(cancellationToken))
+                .Concat(await jobKeysQuery
+                    .Select(job => new PageStorageKey(job.UserId, job.PageId, job.S3Key!))
+                    .ToListAsync(cancellationToken))
+                .GroupBy(item => new
+                {
+                    item.UserId,
+                    item.PageId,
+                    StorageKey = item.StorageKey.Trim()
+                })
+                .Select(group => group.First())
+                .ToList();
+
+            var stats = storageKeys
+                .GroupBy(item => new { item.UserId, item.PageId })
+                .Select(group =>
+                {
+                    long storageBytes = 0;
+
+                    foreach (var item in group)
+                    {
+                        try
+                        {
+                            var localPath = _storage.GetAbsolutePath(item.StorageKey);
+                            if (!System.IO.File.Exists(localPath))
+                            {
+                                continue;
+                            }
+
+                            storageBytes += new FileInfo(localPath).Length;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(
+                                ex,
+                                "Could not read storage stats for page {PageId} and storage key {StorageKey}.",
+                                item.PageId,
+                                item.StorageKey);
+                        }
+                    }
+
+                    return new FacebookPageStorageStatsResponse
+                    {
+                        UserId = group.Key.UserId,
+                        PageId = group.Key.PageId,
+                        StorageBytes = storageBytes
+                    };
+                })
+                .OrderBy(item => item.PageId)
+                .ToList();
+
+            return Ok(stats);
+        }
+
         [HttpGet("facebook/{userId}")]
         public async Task<ActionResult<IEnumerable<FacebookPage>>> GetFacebookPages(string userId)
         {
@@ -1254,5 +1331,16 @@ namespace Smapi.API.Controllers
             value = value.Trim();
             return value.Length <= 500 ? value : value[..500];
         }
+
+        private record PageStorageKey(string UserId, string PageId, string StorageKey);
+    }
+
+    public class FacebookPageStorageStatsResponse
+    {
+        public string UserId { get; set; } = string.Empty;
+
+        public string PageId { get; set; } = string.Empty;
+
+        public long StorageBytes { get; set; }
     }
 }

@@ -38,10 +38,17 @@ interface FacebookMetaAppApi {
   isDefault: boolean;
 }
 
+interface FacebookPageStorageStatsApi {
+  userId: string;
+  pageId: string;
+  storageBytes: number;
+}
+
 export default function FacebookAccountsPage() {
   const [userId, setUserId] = useState('');
   const [pages, setPages] = useState<FBPage[]>([]);
   const [metaApps, setMetaApps] = useState<FacebookMetaAppApi[]>([]);
+  const [pageStorageStats, setPageStorageStats] = useState<Record<string, FacebookPageStorageStatsApi>>({});
   const [message, setMessage] = useState('');
   const [modalMessage, setModalMessage] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -68,11 +75,12 @@ export default function FacebookAccountsPage() {
     }
 
     try {
-      const [response, metaAppsResponse] = await Promise.all([
+      const [response, metaAppsResponse, storageStatsResponse] = await Promise.all([
         fetch('/api/smapi/Pages/facebook'),
         nextUserId.trim()
           ? fetch(`/api/smapi/FacebookMetaApps?userId=${encodeURIComponent(nextUserId.trim())}`)
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        fetch('/api/smapi/Pages/facebook/storage-stats')
       ]);
       const data = await response.json();
       if (Array.isArray(data)) {
@@ -86,6 +94,20 @@ export default function FacebookAccountsPage() {
         setMetaApps(Array.isArray(metaAppsData) ? metaAppsData as FacebookMetaAppApi[] : []);
       } else if (!nextUserId.trim()) {
         setMetaApps([]);
+      }
+
+      if (storageStatsResponse.ok) {
+        const statsData = await storageStatsResponse.json();
+        setPageStorageStats(
+          Array.isArray(statsData)
+            ? (statsData as FacebookPageStorageStatsApi[]).reduce<Record<string, FacebookPageStorageStatsApi>>((accumulator, item) => {
+                accumulator[pageStorageStatsKey(item.userId, item.pageId)] = item;
+                return accumulator;
+              }, {})
+            : {}
+        );
+      } else {
+        setPageStorageStats({});
       }
     } catch {
       setMessage('Failed to fetch Facebook pages from the backend.');
@@ -355,6 +377,15 @@ export default function FacebookAccountsPage() {
                   <span className="material-symbols-outlined text-xs">key</span>
                   <span className="truncate">Token: {maskToken(page.accessToken)}</span>
                 </div>
+                <div className="mt-2 flex items-center justify-between gap-3 rounded border border-amber-500/10 bg-amber-500/5 px-3 py-2 text-[10px]">
+                  <span className="inline-flex items-center gap-1 uppercase tracking-widest font-bold text-amber-200/80">
+                    <span className="material-symbols-outlined text-xs">database</span>
+                    Storage Used
+                  </span>
+                  <span className="font-bold text-amber-100">
+                    {formatStorageGb(pageStorageStats[pageStorageStatsKey(page.userId, page.pageId)]?.storageBytes ?? 0)}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -603,6 +634,19 @@ function metaAppsHref(userId: string) {
   return trimmedUserId
     ? `/accounts/facebook/meta-apps?userId=${encodeURIComponent(trimmedUserId)}`
     : '/accounts/facebook/meta-apps';
+}
+
+function pageStorageStatsKey(userId: string, pageId: string) {
+  return `${userId.trim()}::${pageId.trim()}`;
+}
+
+function formatStorageGb(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 GB';
+  }
+
+  const gb = bytes / 1024 / 1024 / 1024;
+  return `${gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)} GB`;
 }
 
 function getStoredUserId() {

@@ -45,6 +45,7 @@ builder.Services.AddHttpClient<IFacebookCommentsPublisher, FacebookCommentsPubli
 builder.Services.AddScoped<IFacebookWebhookReceiver, FacebookWebhookReceiver>();
 builder.Services.AddScoped<IFacebookCommentReplyProcessor, FacebookCommentReplyProcessor>();
 builder.Services.AddHostedService<FacebookReelUploadWorker>();
+builder.Services.AddHostedService<PublishedReelLocalVideoCleanupWorker>();
 builder.Services.AddHostedService<FacebookPostS3UploadWorker>();
 builder.Services.AddHostedService<FacebookCommentReplyWorker>();
 

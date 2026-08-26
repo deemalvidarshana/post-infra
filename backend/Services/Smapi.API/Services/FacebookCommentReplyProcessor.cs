@@ -66,6 +66,8 @@ namespace Smapi.API.Services
                     context.Page.AccessToken,
                     reply,
                     context.Setting.GraphApiVersion,
+                    commentEvent.CommentAuthorId,
+                    commentEvent.CommentAuthorName,
                     cancellationToken);
 
                 commentEvent.ReplyCommentId = replyId;
@@ -107,6 +109,8 @@ namespace Smapi.API.Services
                 context.Page.AccessToken,
                 reply,
                 context.Setting.GraphApiVersion,
+                commentEvent.CommentAuthorId,
+                commentEvent.CommentAuthorName,
                 cancellationToken);
 
             commentEvent.GeneratedReply = reply;
