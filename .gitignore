@@ -59,6 +59,7 @@ logs/*
 /rednote/
 
 # Temporary / Scratch
+.codex-backups/
 *.png
 *.html
 test.py
