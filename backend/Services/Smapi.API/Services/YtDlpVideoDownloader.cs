@@ -12,6 +12,12 @@ namespace Smapi.API.Services
     {
         private readonly IConfiguration _configuration;
         private const int MaxDownloadAttempts = 3;
+        private static readonly string[] TikTokImpersonateTargets =
+        {
+            "chrome-133:macos-15",
+            "chrome-131:android-14",
+            "chrome-136:macos-15"
+        };
 
         public YtDlpVideoDownloader(IConfiguration configuration)
         {
@@ -35,7 +41,17 @@ namespace Smapi.API.Services
             {
                 try
                 {
-                    return await RunYtDlpAsync(executablePath, videoUrl, outputTemplate, outputDirectory, cancellationToken);
+                    var impersonateTarget = IsTikTokUrl(videoUrl)
+                        ? TikTokImpersonateTargets[(attempt - 1) % TikTokImpersonateTargets.Length]
+                        : null;
+
+                    return await RunYtDlpAsync(
+                        executablePath,
+                        videoUrl,
+                        outputTemplate,
+                        outputDirectory,
+                        impersonateTarget,
+                        cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -60,6 +76,7 @@ namespace Smapi.API.Services
             string videoUrl,
             string outputTemplate,
             string outputDirectory,
+            string? impersonateTarget,
             CancellationToken cancellationToken)
         {
             var startInfo = new ProcessStartInfo
@@ -78,6 +95,11 @@ namespace Smapi.API.Services
             startInfo.ArgumentList.Add("--force-ipv4");
             startInfo.ArgumentList.Add("--no-update");
             startInfo.ArgumentList.Add("--no-playlist");
+            if (!string.IsNullOrWhiteSpace(impersonateTarget))
+            {
+                startInfo.ArgumentList.Add("--impersonate");
+                startInfo.ArgumentList.Add(impersonateTarget);
+            }
             startInfo.ArgumentList.Add("-o");
             startInfo.ArgumentList.Add(outputTemplate);
             startInfo.ArgumentList.Add(videoUrl);
@@ -153,6 +175,19 @@ namespace Smapi.API.Services
             }
 
             return $"yt-dlp failed with exit code {exitCode}: {trimmedDetails}";
+        }
+
+        private static bool IsTikTokUrl(string videoUrl)
+        {
+            if (!Uri.TryCreate(videoUrl, UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            return uri.Host.Equals("tiktok.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.EndsWith(".tiktok.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Equals("tiktokv.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.EndsWith(".tiktokv.com", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void TryKillProcess(Process process)

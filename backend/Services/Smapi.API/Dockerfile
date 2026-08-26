@@ -27,7 +27,7 @@ RUN apt-get update \
         python3 \
         python3-venv \
     && python3 -m venv /opt/yt-dlp \
-    && /opt/yt-dlp/bin/pip install --no-cache-dir --upgrade pip yt-dlp \
+    && /opt/yt-dlp/bin/pip install --no-cache-dir --upgrade pip "yt-dlp[default,curl-cffi]" \
     && ln -s /opt/yt-dlp/bin/yt-dlp /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
